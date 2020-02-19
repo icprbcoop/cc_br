@@ -26,11 +26,12 @@ library(trend)
 #
 source("code/functions/read_br_spatialave_func.R", local = TRUE)
 
-# # By hand filtering criterias ---------------------------------
-# pcriteria <- 0.10 # preliminary criteria
-# tcriteria <- 0.10
+# Met data filtering choices
+obs_filter <- "obs_prism"
+# obs_filter <- "obs" # this is observed BR data, but only up thru 1999
+# obs_filter <- "obs_nclim"
 
-# ttest criteria for both p and t
+# Met data filtering ttest criteria for both p and t
 ttest_crit <- 0.05
 ```
 
@@ -155,7 +156,7 @@ lfalls_annual_1896to1980.df <- lfalls_annual.df0 %>%
 
 # Read the PRISM data ---------------------------------------------------
 # Units of precip are mm per month, so convert to mm/day to match BR data
-# For some reason these files have only year >= 1950 - why not earlier?
+
 prism_path <- "input"
 p.prism.df0 <- file.path(prism_path, "precip_monthly_mm_prism.csv") %>%
     data.table::fread(
@@ -257,13 +258,13 @@ met.df <- met.df %>%
 ## Characterize meteorological data
 
 Because we are interested in "long-term" average conditions, the record is divided up into "eras", each about 30 years in length. The eras are
-- 1950-1979, 30-year "base" era
-- 1980-2009, 30-year recent past era
-- 2010-2034, 25-year current era
-- 2035-2064, 30-year current planning forecast era
-- 2065-2094, 30-year long-term planning forecast era
+1965 - 1950-1979, 30-year "base" era
+1995 - 1980-2009, 30-year recent past era
+2025 - 2010-2039, 30-year current era
+2055 - 2040-2069, 30-year current planning forecast era
+2085 - 2070-2099, 30-year long-term planning forecast era
 
-Mean flow at Little Falls for the base era is 350 mm (11,741 cfs), just 0.5% less than mean flow for the period, 1897-1979, 351 mm (11,772 cfs). Mean precipitation is 992 mm in both periods! [The only thing that doesn't match so well is mean temperature: 11.2 deg C for 1896-1979 and 11.0 deg C for 1950-1979.] This latter period, 1896-1979, was used to generate the coefficients for the regression model which predicts flow, as a fraction of mean flow, precipitation as a fraction of mean precipitation, precipitation squared as fraction of mean precipitation squared (ie P^2/P0^2), and change in temperature in degrees Celsius, from mean temperature in 1897-1979. 
+Mean flow at Little Falls for the base era is 338 mm (11,741 cfs), just 0.5% less than mean flow for the period, 1897-1979, 351 mm (11,772 cfs). Mean precipitation is 992 mm in both periods! [The only thing that doesn't match so well is mean temperature: 11.2 deg C for 1896-1979 and 11.0 deg C for 1950-1979.] This latter period, 1896-1979, was used to generate the coefficients for the regression model which predicts flow, as a fraction of mean flow, precipitation as a fraction of mean precipitation, precipitation squared as fraction of mean precipitation squared (ie P^2/P0^2), and change in temperature in degrees Celsius, from mean temperature in 1897-1979. 
 ```{r include=FALSE}
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
@@ -553,7 +554,7 @@ But I'd like to try filtering based on trends.
 ```{r include=FALSE}
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
-# Filter the runs - by testing difference between eras 1965 and 1995
+# Filter the runs - by testing difference in means - eras 1965 and 1995
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 
@@ -592,10 +593,6 @@ t.annual.ttest.df <- t.annual.ttest.df0 %>%
   mutate(tdiff = tave_annual - tave_1965) %>%
   select(year, run, tdiff) %>%
   spread(key = run, value = tdiff)
-
-obs_filter <- "obs_prism"
-# obs_filter <- "obs" # this is observed BR data, but only up thru 1999
-# obs_filter <- "obs_nclim"
 
 # Create vectors of observed pave_annuals and tave_annuals -----------------
 p.annual.obs.df <- p.annual.ttest.df0 %>%
@@ -1104,7 +1101,7 @@ q_cc90.runs.df <- q_met.fannual.df %>%
   dplyr::filter(qfrac_ltmean_2055 < cc90_upperlim) %>%
   dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
 
-q_cc75.runs.df <- q_met.fannual.df %>%
+q_cc70.runs.df <- q_met.fannual.df %>%
   dplyr::filter(qfrac_ltmean_2055 >= cc70_lowerlim &
                   qfrac_ltmean_2055 < cc70_upperlim) %>%
   dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
@@ -1114,7 +1111,7 @@ q_cc50.runs.df <- q_met.fannual.df %>%
                   qfrac_ltmean_2055 < cc50_upperlim) %>%
   dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
 
-q_cc25.runs.df <- q_met.fannual.df %>%
+q_cc30.runs.df <- q_met.fannual.df %>%
   dplyr::filter(qfrac_ltmean_2055 >= cc30_lowerlim &
                   qfrac_ltmean_2055 < cc30_upperlim) %>%
   dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
@@ -1155,7 +1152,7 @@ q_cc90_long <- q_cc90 %>%
                 -dqrlt35, -dqrlt65, -dqrmean) %>%
   tidyr::gather(key = "stat", value = "val", -era)
 
-q_cc75 <- q_cc75.runs.df %>%
+q_cc70 <- q_cc70.runs.df %>%
     filter(!(run == "obs") & !(run == "obs_prism")) %>%
   group_by(era) %>%
   summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 2),
@@ -1180,7 +1177,7 @@ q_cc75 <- q_cc75.runs.df %>%
             tltave = round(mean(tave_annual), 2)
               ) %>%
   ungroup()
-q_cc75_long <- q_cc75 %>%
+q_cc70_long <- q_cc70 %>%
   dplyr::mutate(era = as.integer(era)) %>%
   dplyr::select(-dqrcount, -dqrsd, -pltave, -tltave,
                 -dqrlt35, -dqrlt65, -dqrmean) %>%
@@ -1217,7 +1214,7 @@ q_cc50_long <- q_cc50 %>%
                 -dqrlt35, -dqrlt65, -dqrmean) %>%
   tidyr::gather(key = "stat", value = "val", -era)
 
-q_cc25 <- q_cc25.runs.df %>%
+q_cc30 <- q_cc30.runs.df %>%
     filter(!(run == "obs") & !(run == "obs_prism")) %>%
   group_by(era) %>%
   summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 2),
@@ -1242,7 +1239,7 @@ q_cc25 <- q_cc25.runs.df %>%
             tltave = round(mean(tave_annual), 2)
               ) %>%
   ungroup()
-q_cc25_long <- q_cc25 %>%
+q_cc30_long <- q_cc30 %>%
   dplyr::mutate(era = as.integer(era)) %>%
   dplyr::select(-dqrcount, -dqrsd, -pltave, -tltave,
                 -dqrlt35, -dqrlt65, -dqrmean) %>%
@@ -1346,12 +1343,12 @@ q_cc90_small <- q_cc90 %>%
 
 q_summary <- q_cc90_small
 
-q_cc75_small <- q_cc75 %>%
+q_cc70_small <- q_cc70 %>%
   mutate(group = "moddry", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
   filter(era == 1965 | era == 1995 | era == 2055) %>%
   select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
 
-q_summary <- rbind(q_summary, q_cc75_small)
+q_summary <- rbind(q_summary, q_cc70_small)
 
 q_cc50_small <- q_cc50 %>%
   mutate(group = "ave", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
@@ -1360,12 +1357,12 @@ q_cc50_small <- q_cc50 %>%
 
 q_summary <- rbind(q_summary, q_cc50_small)
 
-q_cc25_small <- q_cc25 %>%
+q_cc30_small <- q_cc30 %>%
   mutate(group = "modwet", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
   filter(era == 1965 | era == 1995 | era == 2055) %>%
   select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
 
-q_summary <- rbind(q_summary, q_cc25_small)
+q_summary <- rbind(q_summary, q_cc30_small)
 
 q_cc10_small <- q_cc10 %>%
   mutate(group = "verywet", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
@@ -1397,9 +1394,12 @@ knitr::kable(q_summary)
 ```{r include=FALSE}
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
-# Make PRRISM flow input time series
+# Make tables of quantile scale factors
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
+
+# Collect the scale factors in qscale0.df
+
 # Read original PRRISM input flow time series ---------------------------------
 #    - right now just up through 2013
 #    - units are MGD!
@@ -1453,9 +1453,9 @@ qscale0.df <- qscale50 %>%
   mutate(qscale_cc50 = round(qscale_cc50, 2)) %>%
   select(quantiles, year, q_mm, q_obs_frac, qscale_cc50)
 
-# Moderately dry: cc75 --------------------------------------------------------
-# Start with dq_cc75; just look at eras 1965 and 2055; transpose
-qm_cc75 <- q_cc75 %>% 
+# Moderately dry: cc70 --------------------------------------------------------
+# Start with dq_cc70; just look at eras 1965 and 2055; transpose
+qm_cc70 <- q_cc70 %>% 
   filter(era %in% c(1965, 2055)) %>%
   mutate(eratxt = c("t1965", "t2055")) %>%  
   select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
@@ -1463,24 +1463,24 @@ qm_cc75 <- q_cc75 %>%
   spread(eratxt, values)
 
 # Add column with numeric quantile values to replace text quantile values
-qm_cc75 <- qm_cc75 %>%
+qm_cc70 <- qm_cc70 %>%
   cbind(quantiles) %>%
   select(newrows, quantiles, t1965, t2055) %>%
-  mutate(qscale_cc75 = round(t2055/t1965, 2))
+  mutate(qscale_cc70 = round(t2055/t1965, 2))
 
 # Add quantile mapping values to lfalls.annual.df
-qscale75 <- qm_cc75 %>%
+qscale70 <- qm_cc70 %>%
   full_join(lfalls_annual_1896to1980.df, by = "quantiles") %>%
   arrange(quantiles)
 
 # Use na.approx to fill in the NA's using linear interpolation
-qscale75$qscale_cc75 <- zoo::na.approx(qscale75$qscale_cc75, qscale75$quantiles)
+qscale70$qscale_cc70 <- zoo::na.approx(qscale70$qscale_cc70, qscale70$quantiles)
 
-# Add qscale_cc75 to qscale0.df
-qscale75 <- qscale75 %>%
-  mutate(qscale_cc75 = round(qscale_cc75, 2)) %>%
-  select(quantiles, qscale_cc75)
-qscale0.df <- left_join(qscale0.df, qscale75, by = "quantiles")
+# Add qscale_cc70 to qscale0.df
+qscale70 <- qscale70 %>%
+  mutate(qscale_cc70 = round(qscale_cc70, 2)) %>%
+  select(quantiles, qscale_cc70)
+qscale0.df <- left_join(qscale0.df, qscale70, by = "quantiles")
 
 # Severely dry: cc90 ----------------------------------------------------------
 # Start with dq_cc90; just look at eras 1965 and 2055; transpose
@@ -1511,9 +1511,9 @@ qscale90 <- qscale90 %>%
   select(quantiles, qscale_cc90)
 qscale0.df <- left_join(qscale0.df, qscale90, by = "quantiles")
 
-# Moderately wet: cc25 --------------------------------------------------------
-# Start with dq_cc25; just look at eras 1965 and 2055; transpose
-qm_cc25 <- q_cc25 %>% 
+# Moderately wet: cc30 --------------------------------------------------------
+# Start with dq_cc30; just look at eras 1965 and 2055; transpose
+qm_cc30 <- q_cc30 %>% 
   filter(era %in% c(1965, 2055)) %>%
   mutate(eratxt = c("t1965", "t2055")) %>%  
   select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
@@ -1521,25 +1521,25 @@ qm_cc25 <- q_cc25 %>%
   spread(eratxt, values)
 
 # Add column with numeric quantile values to replace text quantile values
-qm_cc25 <- qm_cc25 %>%
+qm_cc30 <- qm_cc30 %>%
   cbind(quantiles) %>%
   select(newrows, quantiles, t1965, t2055) %>%
-  mutate(qscale_cc25 = round(t2055/t1965, 2))
+  mutate(qscale_cc30 = round(t2055/t1965, 2))
 
 # Add quantile mapping values to lfalls.annual.df
-qscale25 <- qm_cc25 %>%
+qscale30 <- qm_cc30 %>%
   full_join(lfalls_annual_1896to1980.df, by = "quantiles") %>%
   arrange(quantiles)
 
 # Use na.approx to fill in the NA's using linear interpolation
-qscale25$qscale_cc25 <- zoo::na.approx(qscale25$qscale_cc25, qscale25$quantiles)
+qscale30$qscale_cc30 <- zoo::na.approx(qscale30$qscale_cc30, qscale30$quantiles)
 
-# Add qscale_cc25 to qscale0.df
-qscale25 <- qscale25 %>%
-  mutate(qscale_cc25 = round(qscale_cc25, 2)) %>%
-  select(quantiles, qscale_cc25)
+# Add qscale_cc30 to qscale0.df
+qscale30 <- qscale30 %>%
+  mutate(qscale_cc30 = round(qscale_cc30, 2)) %>%
+  select(quantiles, qscale_cc30)
 
-qscale0.df <- left_join(qscale0.df, qscale25, by = "quantiles")
+qscale0.df <- left_join(qscale0.df, qscale30, by = "quantiles")
 
 # Very wet: cc10 --------------------------------------------------------------
 # Start with dq_cc10; just look at eras 1965 and 2055; transpose
@@ -1611,15 +1611,60 @@ qscaleall <- qscaleall %>%
 qscale0.df <- left_join(qscale0.df, qscaleall, by = "quantiles")
 
 # Collect all original quantile mapping results for display -------------------
-qscale_display <- left_join(qm_cc50, qm_cc75, by = "quantiles")
+qscale_display <- left_join(qm_cc50, qm_cc70, by = "quantiles")
 qscale_display <- left_join(qscale_display, qm_cc90, by = "quantiles")
 qscale_display <- left_join(qscale_display, qm_cc10, by = "quantiles")
-qscale_display <- left_join(qscale_display, qm_cc25, by = "quantiles")
+qscale_display <- left_join(qscale_display, qm_cc30, by = "quantiles")
 qscale_display <- left_join(qscale_display, qscaleall, by = "quantiles") %>%
-  select(quantiles, qscale_cc90, qscale_cc75, qscale_cc50,
-         qscale_cc25, qscale_cc10,  qscaleall_to2055,
+  select(quantiles, qscale_cc90, qscale_cc70, qscale_cc50,
+         qscale_cc30, qscale_cc10,  qscaleall_to2055,
          qscaleall_to1995, qscaleall_to2025, qscaleall_to2085)
 ```
+
+```{r}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Write new PRRISM flow input time series file
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Remember the scale factors are all in qscale0.df
+#   and years in qscale0.df range from 1897 to 1979
+#   whereas years in prrism_flows_orig.df range from 1929 to 2013
+# Right now I can only figure out how to make PRRISM inputs for 1929 - 1979
+
+# Get rid of all rows where year = NA
+#   and we're using cc_all - forget about cc10 etc.
+qscale.df <- qscale0.df %>%
+  drop_na(year) %>% # 
+  select(-qscale_cc50, -qscale_cc10, -qscale_cc30,
+         -qscale_cc70, -qscale_cc90) %>%
+  arrange(year)
+
+prrism_flows_ccall <- left_join(prrism_flows_orig.df, 
+                                qscale.df, by = "year") %>%
+  filter(year < 1980) %>%
+  mutate(jrr_inflow = round(jrr_inflow*qscaleall_to2055,2),
+         sav_inflow = round(sav_inflow*qscaleall_to2055,2),
+         sen_inflow = round(sen_inflow*qscaleall_to2055,2),
+         occ_inflow = round(occ_inflow*qscaleall_to2055,2),
+         pat_inflow = round(pat_inflow*qscaleall_to2055,2),
+         por_no_nbr = round(por_no_nbr*qscaleall_to2055,2),
+         por_below = round(por_below*qscaleall_to2055,2),
+         lfalls_nat = round(lfalls_nat*qscaleall_to2055,2), # must be lfalls_no_res!
+         beaverdam_inflow = round(beaverdam_inflow*qscaleall_to2055,2),
+         goose_inflow = round(goose_inflow*qscaleall_to2055,2),
+         manassas_nat_inflow = round(manassas_nat_inflow*qscaleall_to2055,2)) %>%
+    select(-date_time, -quantiles, -q_mm, -q_obs_frac)
+
+
+write_path <- "output/"
+write_tsv(prrism_flows_ccall, paste(write_path, 
+                                    "prrism_flows_ccall.txt", sep = ""),
+          col_names = FALSE)
+
+```
+
 
 ```{r}
 knitr::kable(qscale_display)
