@@ -27,9 +27,9 @@ library(trend)
 source("code/functions/read_br_spatialave_func.R", local = TRUE)
 
 # Met data filtering choices
-obs_filter <- "obs_prism"
+# obs_filter <- "obs_prism"
 # obs_filter <- "obs" # this is observed BR data, but only up thru 1999
-# obs_filter <- "obs_nclim"
+obs_filter <- "obs_nclim"
 
 # Met data filtering ttest criteria for both p and t
 ttest_crit <- 0.05
@@ -1644,23 +1644,24 @@ qscale.df <- qscale0.df %>%
 prrism_flows_ccall <- left_join(prrism_flows_orig.df, 
                                 qscale.df, by = "year") %>%
   filter(year < 1980) %>%
-  mutate(jrr_inflow = round(jrr_inflow*qscaleall_to2055,2),
-         sav_inflow = round(sav_inflow*qscaleall_to2055,2),
-         sen_inflow = round(sen_inflow*qscaleall_to2055,2),
-         occ_inflow = round(occ_inflow*qscaleall_to2055,2),
-         pat_inflow = round(pat_inflow*qscaleall_to2055,2),
-         por_no_nbr = round(por_no_nbr*qscaleall_to2055,2),
-         por_below = round(por_below*qscaleall_to2055,2),
-         lfalls_nat = round(lfalls_nat*qscaleall_to2055,2), # must be lfalls_no_res!
-         beaverdam_inflow = round(beaverdam_inflow*qscaleall_to2055,2),
-         goose_inflow = round(goose_inflow*qscaleall_to2055,2),
-         manassas_nat_inflow = round(manassas_nat_inflow*qscaleall_to2055,2)) %>%
-    select(-date_time, -quantiles, -q_mm, -q_obs_frac)
-
+  mutate(jrr_inflow = round(jrr_inflow*qscaleall_to2055,1),
+         sav_inflow = round(sav_inflow*qscaleall_to2055,1),
+         sen_inflow = round(sen_inflow*qscaleall_to2055,1),
+         occ_inflow = round(occ_inflow*qscaleall_to2055,1),
+         pat_inflow = round(pat_inflow*qscaleall_to2055,1),
+         por_no_nbr = round(por_no_nbr*qscaleall_to2055,0),
+         por_below = round(por_below*qscaleall_to2055,0),
+         lfalls_nat = round(lfalls_nat*qscaleall_to2055,0), # must be lfalls_no_res!
+         beaverdam_inflow = round(beaverdam_inflow*qscaleall_to2055,1),
+         goose_inflow = round(goose_inflow*qscaleall_to2055,1),
+         manassas_nat_inflow = round(manassas_nat_inflow*qscaleall_to2055,1)) %>%
+    select(-date_time, -quantiles, -q_mm, -q_obs_frac, -qscaleall_to1995,
+           -qscaleall_to2025, -qscaleall_to2055, -qscaleall_to2085)
 
 write_path <- "output/"
 write_tsv(prrism_flows_ccall, paste(write_path, 
                                     "prrism_flows_ccall.txt", sep = ""),
+          append = FALSE,
           col_names = FALSE)
 
 ```
