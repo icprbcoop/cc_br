@@ -1,0 +1,2179 @@
+---
+title: "Annual Flow Simulations Based on BCSD Downscaled CMIP5 Projections"
+author: "Cherie Schultz"
+date: "Sep-Oct, 2019"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+subtile: Results from BCSD data
+---
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Initial setup; key inputs
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+library(tidyverse)
+library(dplyr)
+library(RcppRoll)
+library(data.table)
+library(zoo)
+library(lubridate)
+library(ggplot2)
+library(trend)
+#
+source("code/functions/read_br_spatialave_func.R", local = TRUE)
+
+# Met data filtering choices
+# obs_filter <- "obs_prism" # this is from Alimatou's PRISM time series
+# obs_filter <- "obs" # this is observed BR data, but only up thru 1999
+obs_filter <- "obs_nclim" # this is derived from the NOAA nClimGrid dataset
+
+# Met data filtering ttest criteria for both p and t
+ttest_crit <- 0.05
+
+# Flow output file version number and date
+output_version <- "v3"
+output_date <- today()
+
+```
+
+```{r setup, include=FALSE}
+# This is for setting global options, but don't think it is being used here
+knitr::opts_chunk$set(echo = FALSE)
+```
+## Script Description
+The purpose of this script is to provide flow-dependent scale factors for mean annual Potomac River "natural" flow at Little Falls.
+
+### Inputs (updated Feb 28, 2020)
+* BCSC monthly climate projections (n=232), 1950-2099, averaged over Potomac basin above Little Falls, plus Mauer's historical data for 1950-1999
+* PRISM historical monthly met data, Oct 1895 - Aug 2018, averaged over Potomac basin above Little Fall
+* NOAA's nClimGrid 5 km resolution historical monthly met data, 1895-2013, averaged over Potomac basin above Little Fall
+* Little Falls "natural" monthly flows, 1895-2019, from lfalls_nat_monthly_finaldraft_v1.0_Feb-18-2020.xlsx
+* Climate response function coefficients for annual "natural" flow at Little Falls, from ClimateResponseFtns_finaldraft_Feb-28-2020.xlsx - regression model dataset now using 1896-1979 base period instead of 1897-1979.
+
+### Outputs
+
+## Version notes
+(updated on March 6, 2020) 
+
+* The annual mean flow climate sensitivity model used is q/q0 = (t-t0) + p/p0 + (p/p0)^2 + qlag/q0
+* Simulated annual flow time series are sorted and categorized by long-term mean flow in era - 2055 (an average of 2040-2069 flows); future flow scenarios are currently long-term mean flows centered around (+10% and -10%)
+    + 10th percentile (very dry)
+    + 30th percentile (moderately dry)
+    + 50th percentile (no change in mean flows)
+    + 70th percentile (moderately wet)
+    + 90th percentile (very wet)
+* I originally applied the Kolmogorov-Smirnov test to filter the runs based on precipitation and temperature time series and a criteria of p-value <= 0.1. But no runs fail with this criteria. Later I read the BCSD documentation and see that quantile mapping is used to produce the monthly precip & temp time series, thus explaining why all runs pass the test!
+* Now filtering using t-test on each run's change in long-term mean P and T between 1950-1979 and 1980-2009 eras, versus observed. This test winds up discarding the hotter runs, but depends on the historical met dataset that is used. For Maurer, dT ~ 0.1 deg C. For PRISM, dT ~ 0.2 deg C. For nClimGrid, dT ~ 0.4 deg C. Right now I am using nClimGrid, since it is deemed suitable for use in long-term trend analyses, unlike PRISM (and Maurer only goes up thru 1999).
+* Final quantile mapping results depend on the length of the historic annual flow time series. I'm now using 1896-2009 - calculating percentiles, then removing effects of climate on the 1980-2009 annual flows, then recalculating percentiles.
+
+## Import Data
+
+### BCSD Data
+I am using an ensemble of climate projections that have been statistically downscaled using monthly bias-correction and spatial disaggregation (BCSD) (Reclamation, 2013), available from the “Downscaled CMIP3 and CMIP5 Climate and Hydrology Projections” archive at http://gdo- dcp.ucllnl.org/downscaled_cmip_projections. These projections were derived from the Coupled Model Intercomparison Project Phase 5 (CMIP5) multi-model ensemble [archive/output/results/of simulations/dataset/ ...]. The BCSD data are monthly time series, extending from 1950 through 2099, for a grid of ⅛ degree by ⅛ degree, providing a spatial resolution of approximately 12 kilometers by 12 kilometers. The BCSD gridded data, clipped and spatially averaged over the drainage area of the Potomac basin upstream of the USGS stream gage at Little Falls Pump station near Washington, DC (38.9375 degrees north and -77.1875 degrees west), were downloaded on from the website, https://gdo-dcp.ucllnl.org/downscaled_cmip_projections/dcpInterface.html
+
+The BCSD datasets were developed using quantile mapping of monthly flows, and their baseline period is 1970-1999. Included with the dataset is historical observed data from 1950-1999, based on Mauer, 2002. When time permits, I'd also like to analyse raw GCM data, also downloaded. These are both monthly datasets, so each can be downloaded via a single data request. The documentation for the CMIP5 BCSD data is at https://gdo-dcp.ucllnl.org/downscaled_cmip_projections/techmemo/downscaled_climate.pdf. 
+
+The recommended citation is: Reclamation, 2013. Downscaled CMIP3 and CMIP5 Climate Projections: Release of Downscaled CMIP5 Climate Projections, Comparison with Preceding Information, and Summary of User Needs. U.S. Department of the Interior, Bureau of Reclamation, Technical Service Center, Denver, Colorado, 116 p., available at: http://gdo- dcp.ucllnl.org/downscaled_cmip_projections/techmemo/downscaled_climate.pdf.
+
+The BCSD data was downloaded on July 31, 2019, by C. Schultz. The provided directories were /1_8obs (Prcp_SpatialStat_mean.csv and Tavg_SpatialStat_mean.csv) for the 1/8th degree observed data and /bcsd5 (pr_SpatialStat_mean.csv and tas_SpatialStat_mean.csv) for the 1/8th degree bias-corrected downscaled CMIP5 data. 
+[The file, COLS_SpatialStat.txt, is supposed to list the run names, but I discovered there was a mismatch between the number of columns in the precip and temp data files and the number of names in COLS_SpatialStat.txt. I inquired at BR, and was told on Aug 6 by Tom Pruitt that I'd found a bug. He said that Precip and Tave had more runs than Tmin and Tmax. He said I could find a more complete list of runs in Projections.txt. So I have created  COLS_SpatialStat_pr_tas.txt for use with Precip and Tave.]
+
+### PRISM data
+Alimatou Seck downloaded average monthly temperature and precipitation gridded data for the time period, Oct 1895, through Aug 2018 from Oregon State's PRISM website at http://www.prism.oregonstate.edu/. She then computed area-weighted averages for Potomac basin sub-basins, and for the entire watershed above Little Falls. Temperature is in degrees Celsius and precipitation is in millimeters per month. [I need to find the metadata for this download - for grid size, base period.]
+
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Read the climate projection data files - dataset specific
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# The following depend on the dataset -----------------------------------------
+ts_path <- "input/gcm_cmip5"
+dataset <- "rgrd5"
+
+# Other global inputs ---------------------------------------------------------
+ts_output <- "output"
+
+# Read CMIP3 precip --------------------------------------------------------------
+#    - projections & observed monthly average precipitation rate (mm/day)
+#    (the function creates a df with columns: year, month, run, val, type)
+
+precip.df <- read_br_spatialave_func(ts_path,
+                                     datatype = "pave",
+                                          subfolder_obs = "1obs",
+                                          subfolder_proj = dataset,
+                                          observed_data_id = "pr",
+                                          projection_data_id = "pr")
+
+# Read temp -------------------------------------------------------------------
+#    - projections & observed monthly average surface air temp (deg C)
+
+tave.df <- read_br_spatialave_func(ts_path,
+                                     datatype = "tave",
+                                          subfolder_obs = "1obs",
+                                          subfolder_proj = dataset,
+                                          observed_data_id = "tas",
+                                          projection_data_id = "tas")
+```
+
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Read other data files and create master monthly met data df - met.df
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Read days_in_month.csv ------------------------------------------------------ 
+#   (created in Excel: number of days in each month from Jan 1950 - Dec 2099)
+days_in_month.df <- file.path("data/days_in_month.csv") %>%
+    data.table::fread(
+      data.table = FALSE,
+      header = TRUE,
+      showProgress = FALSE)
+
+# Read LFalls-natural reconstructed flows -------------------------------------
+#    - put together in lfalls_nat_monthly_finaldraft_v1.0_Feb-18-2020.xlsx
+#    - right now 1895-2019, monthly, cfs
+
+lfalls_nat.df <- file.path("input/lfalls_nat_recon_monthly.csv") %>%
+    data.table::fread(
+      data.table = FALSE,
+      header = TRUE,
+      showProgress = FALSE)
+lfalls_nat.df <- as.data.frame(lfalls_nat.df)
+
+# Compute lfalls_annual.df0 ---------------------------------------------------
+cfs_to_mmperyear <- 0.02983 # for Little Falls watershed area = 3.223E+11 ft2
+                            # (see ClimateResponseFtns_LFallsNat.xlsx)
+
+lfalls_annual.df00 <- lfalls_nat.df %>%
+  group_by(year) %>%
+  summarise(qave_annual_cfs = mean(lfalls_nat_cfs)) %>%
+  dplyr::mutate(q_mm = round(
+    cfs_to_mmperyear*qave_annual_cfs, 2)) %>%
+  ungroup()
+
+# Read the monthly PRISM data -------------------------------------------------
+# Units of precip are mm per month, so convert to mm/day to match BR data
+
+prism_path <- "input"
+p.prism.df0 <- file.path(prism_path, "precip_monthly_mm_prism.csv") %>%
+    data.table::fread(
+      data.table = FALSE,
+      header = TRUE,
+      showProgress = FALSE)
+p.prism.df <- p.prism.df0 %>%
+  dplyr::mutate(pmave = basin_ave) %>%
+  dplyr::right_join(days_in_month.df, by = c("year", "month")) %>%
+  dplyr::mutate(pmave = pmave/days_in_month) %>%
+  dplyr::select(year, month, pmave)
+
+t.prism.df0 <- file.path(prism_path, "temp_monthly_degc_prism.csv") %>%
+    data.table::fread(
+      data.table = FALSE,
+      header = TRUE,
+      showProgress = FALSE)
+t.prism.df <- t.prism.df0 %>%
+  dplyr::mutate(tmave = basin_ave) %>%
+  dplyr::select(year, month, tmave)
+
+prism.df <- left_join(p.prism.df, t.prism.df, by = c("year", "month"))
+prism.df <- prism.df %>%
+  dplyr::mutate(run = "obs_prism", rcp = "obs_prism") %>%
+  dplyr::filter(year < 2010) %>% # reduce the ts to the 2 30-year periods
+  dplyr::select(year, month, run, rcp, pmave, tmave)
+
+# Read the monthly nClimGrid data ---------------------------------------------
+# Units of temperature are deg C
+# Units of precip are mm per month, so convert to mm/day to match BR data
+nclim_path <- "input"
+met_nclim.df0 <- file.path(nclim_path, "nclimgrid_5km_v1.0_upper_pot_monthly.csv") %>%
+    data.table::fread(
+      data.table = FALSE,
+      header = TRUE,
+      showProgress = FALSE)
+met_nclim.df <- met_nclim.df0 %>%
+  dplyr::mutate(pmave = prcp_mm, tmave = tave_degC, year = cyear,
+                run = "obs_nclim", rcp = "obs_nclim") %>%
+  dplyr::right_join(days_in_month.df, by = c("year", "month")) %>%
+  dplyr::mutate(pmave = pmave/days_in_month) %>%
+  dplyr::filter(year < 2010) %>% # reduce the ts to the 2 30-year periods 
+  dplyr::select(year, month, run, rcp, pmave, tmave)
+
+# Create rcp category in BR precip data df ------------------------------------
+precip.df <- precip.df %>%
+  mutate(pave = val,
+         rcp = case_when(
+           str_detect(run, "rcp26") == TRUE ~ "rcp26",
+           str_detect(run, "rcp45") == TRUE ~ "rcp45",
+           str_detect(run, "rcp60") == TRUE ~ "rcp60",
+           str_detect(run, "rcp85") == TRUE ~ "rcp85",
+           str_detect(run, "obs") == TRUE ~ "obs_br",
+  TRUE ~ "NA_what")
+         ) %>%
+  select(year, month, run, rcp, pave)
+
+tave.df <- tave.df %>%
+  mutate(tave = val) %>%
+  select(year, month, run, tave)
+
+# Combine BR precip & temp data ----------------------------------------------- 
+#    (met.df cols: year, month, run, rcp, 
+#                  pmave (monthly, mm/day), tmave (monthly, deg C) )
+met.df <- left_join(precip.df, tave.df, by = c("year", "month", "run"))
+met.df <- met.df %>%
+  dplyr::mutate(pmave = pave, tmave = tave) %>%
+  dplyr::select(-pave, -tave) %>%
+  dplyr::filter(pmave != "NA")
+
+# Add the PRISM data to the BR data; discard dates with no data ---------------
+met.df <- bind_rows(met.df, prism.df) %>%
+  dplyr::filter(year != "NA") %>%
+  dplyr::filter(!(run == "obs_prism" & pmave == "NA"))
+
+# Add the nclim data to the BR data; discard dates with no data ---------------
+met.df <- bind_rows(met.df, met_nclim.df) %>%
+  dplyr::filter(year != "NA") %>%
+  dplyr::filter(!(run == "obs_nclim" & pmave == "NA"))
+
+# Add a column for 30-year eras -----------------------------------------------
+# First need to delete years that we aren't using -----------------------------
+# Also delete era = 2020 for obs_prism - since only 12 years
+met.df <- met.df %>%
+  dplyr::filter(year >= 1950 & year < 2095) %>%
+  dplyr::mutate(era = as.integer(case_when(
+    year >= 1950 & year < 1980 ~ 1965, # base period, if delta q?
+    # year >= 1980 & year < 2005 ~ 1992, # just 25 years - for verification?
+    # year >= 2005 & year < 2035 ~ 2020, 
+    # year >= 1980 & year < 2009 ~ 1998, # full recent record
+    year >= 1980 & year < 2010 ~ 1995, # next 30 years
+    year >= 2010 & year < 2040 ~ 2025, 
+    year >= 2040 & year < 2070 ~ 2055, # forecast period
+    year >= 2070 & year < 2100 ~ 2085, 
+    TRUE ~ -99999
+  ))) %>%
+  # dplyr::filter(!(rcp == "obs_prism" & era >= 2020)) %>%
+  dplyr::select(year, month, era, run, rcp, pmave, tmave)
+```
+
+## Characterize meteorological data
+
+Because we are interested in "long-term" average conditions, the simulation period is divided up into five "eras", each 30 years in length. The eras are
+1965 - 1950-1979, 30-year "base" era, representing pre-climate change conditions
+1995 - 1980-2009, 30-year recent past era
+2025 - 2010-2039, 30-year current era
+2055 - 2040-2069, 30-year current planning forecast era, since it includes 2050
+2085 - 2070-2099, 30-year long-term planning forecast era
+
+Mean flow at Little Falls for the base era, 1950-1979, is 342 mm (11,480 cfs), 1.7% greater than mean flow for the historical period, 1896-1979, 337 mm (11,292 cfs). Mean precipitation is 992 and 991 mm, respectively, in these periods. [The only thing that doesn't match so well is mean temperature: 11.04 deg C for 1950-1979 and 11.19 deg C for 1896-1979] The historical period, 1896-1979, was used to generate the coefficients for the regression model which predicts flow, as a fraction of mean flow, precipitation as a fraction of mean precipitation, precipitation squared as fraction of mean precipitation squared (ie P^2/P0^2), and change in temperature in degrees Celsius, from mean temperature in 1896-1979. 
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Examine unfiltered precip & temp data
+#   - creating met.annual.df & met.run.ltstats.df for future use
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Create df with annual averages by run by year -------------------------------
+#   (note pmave is mm per day)
+#   (pave_annual in mm per year and tave_annual in deg C)
+met.annual.df0 <- met.df %>%
+  dplyr::group_by(year, era, run, rcp) %>%
+  dplyr::right_join(days_in_month.df, by = c("year", "month")) %>%
+  dplyr::filter(!era=="NA") %>%
+  dplyr::mutate(pmave = pmave*days_in_month) %>% # units from mm/day -> mm/month
+  dplyr::summarise(pave_annual = sum(pmave),
+                   tave_annual = mean(tmave)) %>%
+  ungroup()
+
+
+# Calculate long-term (lt) run stats by era -----------------------------------
+  met.run.ltstats.df <- met.annual.df0 %>%
+    dplyr::mutate(p = pave_annual, t = tave_annual) %>%
+    dplyr::group_by(run, rcp, era) %>%
+    dplyr::summarise(pltmean = mean(p),
+                     pltsd = sd(p),
+                     pltmin = min(p),
+                     plt10 = quantile(p, probs = 0.1, na.rm = TRUE),
+                     plt25 = quantile(p, probs = 0.25, na.rm = TRUE),
+                     plt50 = quantile(p, probs = 0.5, na.rm = TRUE),
+                     plt75 = quantile(p, probs = 0.75, na.rm = TRUE),
+                     plt90 = quantile(p, probs = 0.9, na.rm = TRUE),
+                     pltmax = max(p),
+                     tltmean = mean(t),
+                     tltsd = sd(t),
+                     tltmin = min(t),
+                     tlt10 = quantile(t, probs = 0.1, na.rm = TRUE),
+                     tlt25 = quantile(t, probs = 0.25, na.rm = TRUE),
+                     tlt50 = quantile(t, probs = 0.5, na.rm = TRUE),
+                     tlt75 = quantile(t, probs = 0.75, na.rm = TRUE),
+                     tlt90 = quantile(t, probs = 0.9, na.rm = TRUE),
+                     tltmax = max(t)) %>%
+  dplyr::mutate_at(4:12, round, 0) %>%
+  dplyr::mutate_at(13:21, round, 1) %>%
+    dplyr::arrange(rcp, run, era) %>% # so rcp = "obs", era = 1990 is in row 3
+  dplyr::ungroup()
+
+# Count runs in rcp's ---------------------------------------------------------
+rcp.count.df <- met.run.ltstats.df %>%
+  dplyr::group_by(rcp) %>%
+  dplyr::count(run) %>%
+  dplyr::ungroup()
+rcp.count.df <- rcp.count.df %>%
+  dplyr::group_by(rcp) %>%
+  dplyr::count(rcp) %>%
+  dplyr::ungroup()
+
+# Compute stats for each rcp --------------------------------------------------
+# Which is more interesting - medians of stats or stats of means?
+met.rcp.stats.df <- met.run.ltstats.df %>%
+  dplyr::group_by(rcp, era) %>%
+  dplyr::summarise(pltmean = mean(pltmean),
+                   pltmin_median = median(pltmin),
+                   pltmean_median = median(pltmean),
+                   pltsd_median = median(pltsd),
+                   plt10_median = median(plt10),
+                   plt25_median = median(plt25),
+                   plt50_median = median(plt50),
+                   plt75_median = median(plt75),
+                   plt90_median = median(plt90),
+                   pltmax_median = median(pltmax),
+                   tltmean = mean(tltmean),
+                   tltmin_median = median(tltmin),
+                   tltmean_median = median(tltmean),
+                   tltsd_median = median(tltsd),
+                   tlt10_median = median(tlt10),
+                   tlt25_median = median(tlt25),
+                   tlt50_median = median(tlt50),
+                   tlt75_median = median(tlt75),
+                   tlt90_median = median(tlt90),
+                   tltmax_median = median(tltmax),
+                   
+                   pltmean90 = quantile(pltmean, probs = 0.90, na.rm = TRUE),
+                   pltmean75 = quantile(pltmean, probs = 0.75, na.rm = TRUE),
+                   pltmean50 = quantile(pltmean, probs = 0.50, na.rm = TRUE),
+                   pltmean25 = quantile(pltmean, probs = 0.25, na.rm = TRUE),
+                   pltmean10 = quantile(pltmean, probs = 0.10, na.rm = TRUE),
+                   tltmean90 = quantile(tltmean, probs = 0.90, na.rm = TRUE),
+                   tltmean75 = quantile(tltmean, probs = 0.75, na.rm = TRUE),
+                   tltmean50 = quantile(tltmean, probs = 0.50, na.rm = TRUE),
+                   tltmean25 = quantile(tltmean, probs = 0.25, na.rm = TRUE),
+                   tltmean10 = quantile(tltmean, probs = 0.10, na.rm = TRUE),
+                   tltsd_median = median(tltsd),
+                   metlt_n = n()
+                   ) %>%
+  dplyr::mutate_at(3:22, round, 2) %>%
+  dplyr::ungroup()
+
+# Save the wide format table for display --------------------------------------
+met.rcp.stats.display.wide <- met.rcp.stats.df  %>%
+  dplyr::select(rcp, era, metlt_n, 
+                pltmin_median, plt25_median, plt50_median, plt75_median, 
+                pltmax_median, pltmean_median, pltsd_median,
+                tltmin_median, tlt25_median, tlt50_median, tlt75_median, 
+                tltmax_median, tltmean_median, tltsd_median)
+
+# Switch to long format for graphing ------------------------------------------
+met.rcp.stats.df <- met.rcp.stats.df %>%
+  tidyr::gather(key = "stat", value = "val", -rcp, -era)
+
+p_means <- met.rcp.stats.df %>%
+  # dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | rcp == "rcp60" |
+  #                 rcp == "rcp85" ) %>%
+  dplyr::filter(stat == "pltmean")
+
+t_means <- met.rcp.stats.df %>%
+  # dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | rcp == "rcp60" |
+  #                 rcp == "rcp85" ) %>%
+  dplyr::filter(stat == "tltmean")
+
+p_p10_p90 <- met.rcp.stats.df %>%
+  dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | rcp == "rcp60" |
+                  rcp == "rcp85" ) %>%
+  dplyr::filter(stat == "pltmin_median" | stat == "pltmax_median" | 
+                # stat == "plt25_median" | stat == "plt75_median" |
+                  stat == "plt10_median" | stat == "plt90_median" |
+                  stat == "plt50_median")
+t_t10_t90 <- met.rcp.stats.df %>%
+  dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | rcp == "rcp60" |
+                  rcp == "rcp85" ) %>%
+  dplyr::filter(stat == "tltmin_median" | stat == "tltmax_median" | 
+                  # stat == "tlt25_median" | stat == "tlt75_median" |
+                  stat == "tlt10_median" | stat == "tlt90_median" |
+                  stat == "tlt50_median")
+
+p_mean_10_90 <- met.rcp.stats.df %>%
+  dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | rcp == "rcp60" |
+                  rcp == "rcp85" ) %>%
+  dplyr::filter(stat == "pltmean10" | stat == "pltmean90"
+                 # | stat == "pltmean25" | stat == "pltmean75"
+                 | stat == "pltmean50")
+
+# t_mean_sd <- met.rcp.stats.df %>%
+#   dplyr::filter(stat == "tltsd_median" | stat == "tltmean_median")
+
+t_mean_10_90 <- met.rcp.stats.df %>%
+  dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | rcp == "rcp60" |
+                  rcp == "rcp85" ) %>%
+  dplyr::filter(stat == "tltmean10" | stat == "tltmean90"
+                 # | stat == "tltmean25" | stat == "tltmean75"
+                 # | stat == "tltmean50"
+                )
+
+# and also at monthly data ----------------------------------------------------
+met.monthly.df <- met.df %>%
+  group_by(month, era, rcp) %>%
+  dplyr::right_join(days_in_month.df, by = c("year", "month")) %>%
+  dplyr::filter(!era=="NA") %>%
+  dplyr::mutate(pmave = pmave*days_in_month) %>% # units from mm/day -> mm/month
+  dplyr::summarise(pave_monthly = mean(pmave),
+                   tave_monthly = mean(tmave)) %>%
+  ungroup()
+# Create some monthly df's for graphing ---------------------------------------
+p.monthly.rcp <- met.monthly.df %>%
+  group_by(month, rcp) %>%
+  summarise(pave_monthly = mean(pave_monthly)) %>%
+  select(rcp, month, pave_monthly) %>%
+  ungroup()
+t.monthly.rcp <- met.monthly.df %>%
+  group_by(month, rcp) %>%
+  summarise(tave_monthly = mean(tave_monthly)) %>%
+  select(rcp, month, tave_monthly) %>%
+  ungroup()
+p.monthly.era <- met.monthly.df %>%
+  group_by(month, era) %>%
+  summarise(pave_monthly = mean(pave_monthly)) %>%
+  select(era, month, pave_monthly) %>%
+  ungroup()
+t.monthly.era <- met.monthly.df %>%
+  group_by(month, era) %>%
+  summarise(tave_monthly = mean(tave_monthly)) %>%
+  select(era, month, tave_monthly) %>%
+  ungroup()
+ 
+```
+## Examine stats by rcp of unfiltered run
+
+The total number of runs is `r sum(rcp.count.df$n[4:7])`. Below is a table with the number of unfiltered runs for each RCP. Also shown are graphs of predicted trends by RCP. For each run, stats were computed for the 25-30 year "eras". Then the median of the run stats were computed for each RCP and for the observed data.
+```{r}
+knitr::kable(rcp.count.df)
+```
+
+
+```{r include=FALSE}
+
+ggplot(data = p_means, aes(x = era, y = val))  +
+  geom_line(aes(colour = rcp)) +
+  ggtitle("Long-term precipitation means for each RCP") +
+  scale_y_continuous(name = "Precipitation, mm/year",
+                     limits = c(950, 1250), breaks = seq(950, 1250, 100)) +
+  scale_x_continuous(breaks = c(1960, 1990, 2020, 2050, 2080))
+
+ggplot(data = p_mean_10_90, aes(x = era, y = val))  +
+  geom_line(aes(linetype = rcp, colour = stat)) +
+  ggtitle("Quantiles of each RCP's long-term run means for precipitation") +
+  scale_y_continuous(name = "Precipitation, mm/year",
+                     limits = c(50, 1850), breaks = seq(50, 1850, 100)) +
+  scale_x_continuous(breaks = c(1960, 1990, 2020, 2050, 2080))
+
+ggplot(data = p_p10_p90, aes(x = era, y = val))  +
+  geom_line(aes(linetype = rcp, colour = stat)) +
+  ggtitle("Medians of each RCP's long-term run statistics for precipitation") +
+  # labs(x = "Year", y = "Precipitation, mm per year") +
+  scale_y_continuous(name = "Precipitation, mm/year", 
+                     limits = c(700, 1500), breaks = seq(700, 1500, 200)) +
+  scale_x_continuous(name = "Year",
+                     breaks = c(1960, 1990, 2020, 2050, 2080))
+
+ggplot(data = t_means, aes(x = era, y = val))  +
+  geom_line(aes(colour = rcp)) +
+  ggtitle("Long-term temperature means for each RCP") +
+  # scale_y_continuous(name = "Precipitation, mm/year",
+  #                    limits = c(950, 1250), breaks = seq(950, 1250, 100)) +
+  scale_x_continuous(breaks = c(1960, 1990, 2020, 2050, 2080))
+
+ggplot(data = t_mean_10_90, aes(x = era, y = val))  +
+  geom_line(aes(linetype = rcp, colour = stat)) +
+  ggtitle("Quantiles of each RCP's long-term run means for temperature") +
+  labs(x = "Year", y = "Temperature, deg C") +
+#    scale_y_continuous(breaks = seq(0, 50, 10)) +
+  scale_x_continuous(breaks = c(1960, 1990, 2020, 2050, 2080))
+
+ggplot(data = t_t10_t90, aes(x = era, y = val))  +
+  geom_line(aes(linetype = rcp, colour = stat)) +
+  ggtitle("Medians of each RCP's long-term run statistics for temperature") +
+  labs(x = "Year", y = "Temperature, deg C")
+
+```
+
+```{r include=FALSE}
+# Graph monthly ave data
+ggplot(data = p.monthly.rcp, aes(x = month, y = pave_monthly))  +
+  geom_line(aes(linetype = rcp)) +
+  ggtitle("Precip monthly means by RCP") +
+  scale_y_continuous(name = "Precipitation, mm/month", 
+                     limits = c(60, 120), breaks = seq(60, 120, 20)) +
+  scale_x_continuous(name = "Month", 
+                     limits = c(1, 12), breaks = seq(1, 12, 1))
+ggplot(data = t.monthly.rcp, aes(x = month, y = tave_monthly))  +
+  geom_line(aes(linetype = rcp)) +
+  ggtitle("Temp monthly means by RCP") +
+  labs(x = "Month", y = "Temperature, deg C")
+ggplot(data = p.monthly.era, aes(x = month, y = pave_monthly))  +
+  geom_line(aes(colour = factor(era))) +
+  ggtitle("Precip monthly means by era") +
+  scale_y_continuous(name = "Precipitation, mm/month", 
+                     limits = c(60, 120), breaks = seq(60, 120, 20)) +
+  scale_x_continuous(name = "Month", 
+                     limits = c(1, 12), breaks = seq(1, 12, 1))
+ggplot(data = t.monthly.era, aes(x = month, y = tave_monthly))  +
+  geom_line(aes(colour = factor(era))) +
+  ggtitle("Temp monthly means by era") +
+  labs(x = "Month", y = "Temperature, deg C")
+```
+
+## Filter runs
+
+The Kolmogorov-Smirnov test (stats::ks.test) of simulated vs BR observed values does not eliminate any simulations probably because the BCSD method uses quantile mapping!
+
+Using 1950-2017 PRISM observations
+- ks_crit = 0.1 eliminates 36 runs
+- ks_crit = 0.2 eliminates 102 runs
+
+Using 1950-1999 BR observations
+- ks_crit = 0.1 eliminates 0 runs
+- ks_crit = 0.2 eliminates 8 runs
+- ks_crit = 0.5 eliminates 47 runs
+- ks_crit = 0.75 eliminates 167 runs
+
+But I'd like to try filtering based on trends. 
+
+## Filtering by comparing difference between era = 1965 and 1995 mean P and T, sim vs obs
+
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Filter the runs - by testing difference in means - eras 1965 and 1995
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Construct dfs with annual values --------------------------------------------
+#    from which n=30 sample differences (era 1965 vs 1995) can be extracted 
+
+p.annual.1965.df <- met.annual.df0 %>%
+  filter(era == 1965) %>%
+  mutate(year = year + 30, pave_1965 = pave_annual) %>%
+  select(year, run, pave_1965)
+
+p.annual.1995.df <- met.annual.df0 %>%
+  filter(era == 1995) %>%
+  select(year, era, run, rcp, pave_annual)
+
+p.annual.ttest.df0 <- left_join(p.annual.1995.df, 
+                                p.annual.1965.df, by = c("run", "year"))
+
+p.annual.ttest.df <- p.annual.ttest.df0 %>%
+  mutate(pdiff = pave_annual - pave_1965) %>%
+  select(year, run, pdiff) %>%
+  spread(key = run, value = pdiff)
+
+t.annual.1965.df <- met.annual.df0 %>%
+  filter(era == 1965) %>%
+  mutate(year = year + 30, tave_1965 = tave_annual) %>%
+  select(year, run, tave_1965)
+
+t.annual.1995.df <- met.annual.df0 %>%
+  filter(era == 1995) %>%
+  select(year, era, run, rcp, tave_annual)
+
+t.annual.ttest.df0 <- left_join(t.annual.1995.df, 
+                                t.annual.1965.df, by = c("run", "year"))
+
+t.annual.ttest.df <- t.annual.ttest.df0 %>%
+  mutate(tdiff = tave_annual - tave_1965) %>%
+  select(year, run, tdiff) %>%
+  spread(key = run, value = tdiff)
+
+# Create vectors of observed pave_annuals and tave_annuals -----------------
+p.annual.obs.df <- p.annual.ttest.df0 %>%
+  filter(run == obs_filter) %>%
+  mutate(pdiff  = pave_annual - pave_1965)
+p_obs <- as.vector(p.annual.obs.df$pdiff)
+
+t.annual.obs.df <- t.annual.ttest.df0 %>%
+  filter(run == obs_filter) %>% # or try obs_prism, or obs_nclim
+  mutate(tdiff  = tave_annual - tave_1965)  
+t_obs <- as.vector(t.annual.obs.df$tdiff)
+
+# Want a df to hold filter results --------------------------------------------
+#   - can't remember elegant way! but this works
+filter_stats.df <- data.frame(run = names(p.annual.ttest.df[, 2:234]), 
+                              stringsAsFactors = FALSE,
+                              ttest_pval_p = 1.0, 
+                              ttest_tval_p = 0.0,
+                              ttest_pval_t = 1.0,
+                              ttest_tval_t = 0.0,
+                              ttest_p = as.character("pass"),
+                              ttest_t = as.character("pass"),
+                              ttest_pt = as.character("pass"))
+
+# Compute test stats ----------------------------------------------------------
+for (i in 2:232) {
+  px <- t.test(p_obs, y <- as.vector(p.annual.ttest.df[[i]]),
+                               alternative = "two.sided",
+                               mu = 0,
+                               paired = FALSE,
+                               var.equal = TRUE,
+                               conf.level = 0.90)
+  filter_stats.df$ttest_pval_p[i-1] <- px$p.value
+  filter_stats.df$ttest_tval_p[i-1] <- px$statistic
+  
+  tx <- t.test(t_obs, y <- as.vector(t.annual.ttest.df[[i]]),
+                               alternative = "two.sided",
+                               mu = 0,
+                               paired = FALSE, # need FALSE if n=20 for obs_br
+                               var.equal = TRUE,
+                               conf.level = 0.90)
+  filter_stats.df$ttest_pval_t[i-1] <- tx$p.value
+  filter_stats.df$ttest_tval_t[i-1] <- tx$statistic
+}
+
+filter_stats.df <- filter_stats.df %>%
+  mutate(ttest_p = if_else(ttest_pval_p < ttest_crit, "fail", "pass"),
+         ttest_t = if_else(abs(ttest_pval_t) < ttest_crit, "fail", "pass"),
+         ttest_pt = if_else(abs(ttest_pval_p) >= ttest_crit & ttest_pval_t >= ttest_crit, "pass", "fail"))
+filter_test_final <- filter_stats.df %>%
+  select(run, ttest_pt)
+
+# Add filter test info to the met run stats df --------------------------------
+met.frun.ltstats.small.df <- left_join(met.run.ltstats.df,
+                                      filter_test_final, by = "run") %>%
+  filter(ttest_pt == "pass")
+
+# Look at what failed
+met.frun.ltstats.inspect <- left_join(met.run.ltstats.df,
+                                      filter_stats.df, by = "run") %>%
+  filter(era <= 1995)  %>%
+  select(era, run, pltmean, tltmean, ttest_pval_p, ttest_pval_t, ttest_pt)
+
+
+# Compute stats for each filtered rcp -----------------------------------------
+met.frcp.stats.df <- met.frun.ltstats.small.df %>%
+    dplyr::group_by(rcp, era) %>%
+    dplyr::summarise(pltmin_median = median(pltmin),
+                     plt10_median = median(plt10),
+                     plt25_median = median(plt25),
+                     plt50_median = median(plt50),
+                     plt75_median = median(plt75),
+                     plt90_median = median(plt90),
+                     pltmean_median = median(pltmean),
+                     pltmax_median = median(pltmax),
+                     pltsd_median = median(pltsd),
+                     pltmean90 = quantile(pltmean, probs = 0.90, na.rm = TRUE),
+                     pltmean75 = quantile(pltmean, probs = 0.75, na.rm = TRUE),
+                     pltmean50 = quantile(pltmean, probs = 0.50, na.rm = TRUE),
+                     pltmean25 = quantile(pltmean, probs = 0.25, na.rm = TRUE),
+                     pltmean10 = quantile(pltmean, probs = 0.10, na.rm = TRUE),
+                     pltmeanmin = min(pltmean),
+                     pltmeanmax = max(pltmean),
+                     tltmin_median = median(tltmin),
+                     tlt10_median = median(tlt10),
+                     tlt25_median = median(tlt25),
+                     tlt50_median = median(tlt50),
+                     tlt75_median = median(tlt75),
+                     tlt90_median = median(tlt90),
+                     tltmean_median = median(tltmean),
+                     tltmax_median = max(tltmax),
+                     tltsd_median = median(tltsd),
+                     tltmean90 = quantile(tltmean, probs = 0.90, na.rm = TRUE),
+                     tltmean75 = quantile(tltmean, probs = 0.75, na.rm = TRUE),
+                     tltmean50 = quantile(tltmean, probs = 0.50, na.rm = TRUE),
+                     tltmean25 = quantile(tltmean, probs = 0.25, na.rm = TRUE),
+                     tltmean10 = quantile(tltmean, probs = 0.10, na.rm = TRUE),
+                     tltmeanmin = min(tltmean),
+                     tltmeanmax = max(tltmean)) %>%
+  dplyr::ungroup() %>%
+  tidyr::gather(key = "stat", value = "val", -rcp, -era)
+  
+# Count passing runs by rcp ---------------------------------------------------
+rcp.fcount.df <- met.frun.ltstats.small.df %>%
+    dplyr::group_by(rcp) %>%
+    # dplyr::filter(ttest_pt == "pass") %>%
+    dplyr::count(run) %>%
+    dplyr::ungroup()
+rcp.fcount.df <- rcp.fcount.df %>%
+    dplyr::group_by(rcp) %>%
+    dplyr::count(rcp) %>%
+    dplyr::ungroup()
+  
+# Prepare to graph rcp stats of filtered runs ---------------------------------
+# p_mean_sd <- met.frcp.stats.df %>%
+#     dplyr::filter(stat == "pltsd_median" | stat == "pltmean_median")
+p_mean_10_90 <- met.frcp.stats.df %>%
+  dplyr::filter(stat == "pltmeanmin" | stat == "pltmean10"
+                 | stat == "pltmean50" | stat == "pltmean90"
+                 | stat == "pltmeanmax" ) %>%
+  dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | # skip viewing obs
+                  rcp == "rcp60" | rcp == "rcp85")
+
+# p_p10_p90 <- met.frcp.stats.df %>%
+#     dplyr::filter(stat == "pltmin_median" |
+#                     stat == "plt10_median" | stat == "plt50_median" |
+#                     stat == "plt90_median" | stat == "pltmax_median" ) %>%
+#   dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | # skip viewing obs
+#                   rcp == "rcp60" | rcp == "rcp85")
+
+# t_mean_sd <- met.frcp.stats.df %>%
+#     dplyr::filter(stat == "tltsd_median" | stat == "tltmean_median")
+
+t_mean_10_90 <- met.frcp.stats.df %>%
+  dplyr::filter(stat == "tltmeanmin" | stat == "tltmean10"
+                 | stat == "tltmean50" | stat == "tltmean90"
+                 | stat == "tltmeanmax") %>%
+    dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | # skip viewing obs
+                  rcp == "rcp60" | rcp == "rcp85")
+
+# t_t10_t90 <- met.frcp.stats.df %>%
+#     dplyr::filter(stat == "tltmin_median" | 
+#                     stat == "tlt10_median" | stat == "tlt50_median" |
+#                     stat == "tlt90_median" | stat == "tltmax_median" ) %>%
+#     dplyr::filter(rcp == "rcp26" | rcp == "rcp45" | # skip viewing obs
+#                   rcp == "rcp60" | rcp == "rcp85")
+
+
+# Add the filtertest info to met annual averages ------------------------------
+met.annual.df <-  left_join(met.annual.df0, filter_test_final, by = "run") %>%
+  dplyr::arrange(run, year)
+met.fannual.df0 <- met.annual.df %>%
+  dplyr::filter(ttest_pt == "pass")
+
+# Also look at ensemble stats ------------------------------------------------
+  met.ensemble.df <- met.annual.df0 %>%
+    dplyr::mutate(p = pave_annual, t = tave_annual) %>%
+    dplyr::group_by(era) %>%
+    dplyr::summarise(n_years = n(),
+                     pltmean = mean(p),
+                     pltsd = sd(p),
+                     # pltmin = min(p),
+                     plt001 = quantile(p, probs = 0.001, na.rm = TRUE),
+                     plt10 = quantile(p, probs = 0.1, na.rm = TRUE),
+                     # plt25 = quantile(p, probs = 0.25, na.rm = TRUE),
+                     # plt50 = quantile(p, probs = 0.5, na.rm = TRUE),
+                     # plt75 = quantile(p, probs = 0.75, na.rm = TRUE),
+                     plt90 = quantile(p, probs = 0.9, na.rm = TRUE),
+                     plt999 = quantile(p, probs = 0.999, na.rm = TRUE),
+                     # pltmax = max(p),
+                     tltmean = mean(t),
+                     tltsd = sd(t),
+                     # tltmin = min(t),
+                     tlt001 = quantile(t, probs = 0.001, na.rm = TRUE),
+                     tlt10 = quantile(t, probs = 0.1, na.rm = TRUE),
+                     # tlt25 = quantile(t, probs = 0.25, na.rm = TRUE),
+                     # tlt50 = quantile(t, probs = 0.5, na.rm = TRUE),
+                     # tlt75 = quantile(t, probs = 0.75, na.rm = TRUE),
+                     tlt90 = quantile(t, probs = 0.9, na.rm = TRUE),
+                     tlt999 = quantile(t, probs = 0.999, na.rm = TRUE),
+                     # tltmax = max(t)
+                     ) %>%
+  dplyr::mutate_at(2:8, round, 0) %>%
+  dplyr::mutate_at(9:14, round, 1) %>%
+  dplyr::arrange(era) %>% 
+  dplyr::ungroup()
+
+```
+### Results
+
+The filtering criteria for the hypothesis test is (can change at the beginning of this file): 
+ `r ttest_crit` for both precip and for temp. The observed meteorological dataset used for the filtering (also can be changed at the beginning of this file) is: `r obs_filter`. The total number of filtered, or passing, runs is `r sum(rcp.fcount.df$n[3:6])`.
+  
+We look at some graphs of trends as well.
+```{r}
+knitr::kable(rcp.fcount.df)
+```
+
+```{r}
+
+ggplot(data = p_mean_10_90, aes(x = era, y = val))  +
+  geom_line(aes(linetype = rcp, colour = stat)) +
+  ggtitle("RCP statistics for long-term means of precipitation") +
+  scale_y_continuous(name = "Precipitation, mm/year", 
+                     limits = c(900, 1300), breaks = seq(900, 1300, 100)) +
+  scale_x_continuous(name = "Year",
+                     breaks = c(1960, 1990, 2020, 2050, 2080)) +
+  scale_colour_manual(labels = c("10th percentile", "50th percentile", 
+                                 "90th percentile", "Maximum", "Minimum"), 
+                      name = "Statistic",
+                      values = c("darkorange1", "burlywood4", "turquoise2", 
+                                 "blue", "red")) +
+  scale_linetype_manual(name = "RCP",  
+                        values = c("solid", "dotted", "dashed", "dotdash"))
+
+ggplot(data = t_mean_10_90, aes(x = era, y = val))  +
+  geom_line(aes(linetype = rcp, colour = stat)) +
+  ggtitle("RCP statistics for long-term means of temperature") +
+  labs(x = "Year", y = "Temperature, deg C") +
+  scale_colour_manual(labels = c("10th percentile", "50th percentile", 
+                                 "90th percentile", "Maximum", "Minimum"), 
+                      name = "Statistic",
+                      values = c("darkorange1", "burlywood4", "turquoise2", 
+                                 "blue", "red")) +
+  scale_linetype_manual(name = "RCP",  
+                        values = c("solid", "dotted", "dashed", "dotdash"))
+
+```
+
+Also look at trends in ensemble stats - all RCPs. This table indicates that even in extreme dry years, mean annual precipitation is projected to increase.
+
+```{r}
+knitr::kable(met.ensemble.df)
+```
+
+## Predict changes in flow
+
+Our simple annual flow sensitivity equation is used to compute average annual flow as a function of average annual temperature and precipitation. 
+
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Add predicted flows
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Define the climate response function parameters  ----------------------------
+
+# Model T5 input parameters 
+# - new natural lfalls flows, 
+#        from lfalls_nat_monthly_finaldraft_v1.0_Feb-18-2020.xlsx
+# - regression coefficients etc.,
+#        from ClimateResponseFtns_finaldraft_Feb-18-2020.xlsx
+
+b_p <- -0.204
+b_p2 <- 1.039
+b_dt <- -0.051
+b_qlag <- 0.144
+sey_regression <- 0.159 # std error of the estimate from regression
+
+# These means are computed for 1897-1979
+qbar <- 336.8 # mm
+tbar <- 11.19 # deg C
+pbar <- 991 # mm
+# b_0 <- -0.00
+
+# Add an error term with mean=0 and sd = err_regression
+set.seed(406)
+nerr <- length(met.fannual.df0$run)
+err <-  rnorm(nerr, 0, sey_regression)
+err <- as.data.frame(err)
+colnames(err) <- c("err_term")
+met.fannual.df <- bind_cols(met.fannual.df0, err)
+
+# Compute qfrac predictions annually ------------------------------------------
+#   (for each model run for each year)
+q_met.fannual.df00 <- met.fannual.df %>%
+  select(-ttest_pt) %>%
+  arrange(run, year) %>%
+  mutate(pfrac = round(pave_annual/pbar, 3),
+         dt = round((tave_annual - tbar), 3),
+         qfrac = if_else(year == 1950, 1.00, -9.99),
+         qfrac_lag = lag(qfrac, 1),
+         noise = rnorm(1, 0, 10))
+for (iyear in 1951:2099) {
+  q_met.fannual.df00 <- q_met.fannual.df00 %>%
+    mutate(qfrac = if_else(year == iyear,
+                           b_p*pfrac + b_p2*pfrac^2 + 
+                             b_dt*dt + b_qlag*qfrac_lag + err_term,
+                           qfrac),
+           qfrac_lag = lag(qfrac, 1))
+}
+
+# Create an all-run display table for report ----------------------------------
+
+qpt_fannual <- q_met.fannual.df00 %>%
+  mutate(qave_annual = qfrac*qbar) %>%
+  select(year, run, rcp, era, qave_annual, pave_annual, tave_annual)
+
+qpt_display_sim <- qpt_fannual %>%
+  filter(!(rcp == "obs_br" | rcp == "obs_nclim")) %>%
+  group_by(era) %>%
+  summarise(qave = round(mean(qave_annual), 0), qsd = round(sd(qave_annual), 0),
+            pave = round(mean(pave_annual), 0), psd = round(sd(pave_annual), 0),
+            tave = round(mean(tave_annual), 2), tsd = round(sd(tave_annual), 2)
+            ) %>%
+  ungroup() %>%
+  mutate(rcp = "sim")
+
+qpt_display_obs <- qpt_fannual %>%
+  filter((rcp == "obs_br" | rcp == "obs_nclim")) %>%
+  group_by(era, rcp) %>%
+  summarise(qave = round(mean(qave_annual), 0), qsd = round(sd(qave_annual), 0),
+            pave = round(mean(pave_annual), 0), psd = round(sd(pave_annual), 0),
+            tave = round(mean(tave_annual), 2), tsd = round(sd(tave_annual), 2)
+            ) %>%
+  ungroup()
+
+# This is missing PRISM stats, so copy by hand from met.rcp.stats.df:
+qpt_display <- rbind(qpt_display_obs, qpt_display_sim)
+
+# For each run, compute long-term dq stats over each era ----------------------
+q.frun.ltstats0.df <- q_met.fannual.df00 %>%
+  group_by(run, era) %>%
+  summarise(pltmean = round(mean(pave_annual), 0),
+            tltmean = round(mean(tave_annual), 2),
+            qltmean = round(mean(qfrac), 3)
+            ) %>%
+  ungroup()
+
+# Create df of base = 1965, 1995, and 2055 qfrac_ltmeans for each run ---------
+qltmean.base_2055.df <- q.frun.ltstats0.df %>%
+  dplyr::filter(era == 1965 | era == 1995 | era == 2055) %>%
+  dplyr::select(-pltmean, -tltmean) %>%
+  tidyr::spread(key = "era", value = "qltmean")
+names(qltmean.base_2055.df) <- c("run", "qfrac_ltmean_base_orig","qfrac_ltmean_1995_orig", "qfrac_ltmean_2055_orig")
+
+# Add the qfrac_ltmean orig's to the filtered annual df -----------------------
+q_met.fannual.df0 <- left_join(q_met.fannual.df00, qltmean.base_2055.df,
+                           by = c("run"))
+
+# Right now I am NOT RENORMALIZING: -------------------------------------------
+#    - if I were renormalizing, the following would make more sense
+q_met.fannual.df0 <- q_met.fannual.df0 %>%
+  dplyr::mutate(qfracr = qfrac, 
+                qfrac_ltmean_1965 = qfrac_ltmean_base_orig,
+                qfrac_ltmean_1995 = qfrac_ltmean_1995_orig,
+                qfrac_ltmean_2055 = qfrac_ltmean_2055_orig,
+                qfrac_ltmean_change_1995 = qfrac_ltmean_1995 - qfrac_ltmean_1965,
+                qfrac_ltmean_change_2055 = qfrac_ltmean_2055 - qfrac_ltmean_1965) %>%
+  select(-qfrac_ltmean_base_orig, -qfrac_ltmean_1995_orig, -qfrac_ltmean_2055_orig)
+
+# Compute long-term stats for renormalized qfrac's ----------------------------
+q.frun.ltstats.df <- q_met.fannual.df0 %>%
+  group_by(run, era, rcp) %>%
+  summarise(pltmean = mean(pave_annual),
+            tltmean = mean(tave_annual),
+            qltmean = mean(qfracr),
+            qltsd = sd(qfracr),
+            qlt99 = quantile(qfracr, probs = 0.99, na.rm = TRUE),
+            qlt95 = quantile(qfracr, probs = 0.95, na.rm = TRUE),
+            qlt90 = quantile(qfracr, probs = 0.90, na.rm = TRUE),
+            qlt75 = quantile(qfracr, probs = 0.75, na.rm = TRUE),
+            qlt50 = quantile(qfracr, probs = 0.50, na.rm = TRUE),
+            qlt25 = quantile(qfracr, probs = 0.25, na.rm = TRUE),
+            qlt10 = quantile(qfracr, probs = 0.10, na.rm = TRUE),
+            qlt05 = quantile(qfracr, probs = 0.05, na.rm = TRUE),
+            qlt01 = quantile(qfracr, probs = 0.01, na.rm = TRUE),
+            qltmin = min(qfracr)
+            ) %>%
+  mutate_at(4:17, round, 2) %>%
+  ungroup()
+
+# Add stats to the filtered annual df -----------------------------------------
+q_met.fannual.df <- left_join(q_met.fannual.df0, q.frun.ltstats.df, 
+                           by = c("run", "era"))
+
+# # Test drought persistence metric --------------------------------------------
+# #    (dpersist = 1 if the current year AND the next year are dry)
+# q_met.fannual.drytest <- q_met.fannual.df %>%
+#   dplyr::arrange(run, year) %>%
+#   mutate(dry = if_else(dq <= dqlt25, 1, 0),
+#          nextdry = lead(dry, 1),
+#          nextrun = lead(run, 1),
+#          dpersist = if_else(dry == 1 & nextdry == 1, 1, 0),
+#          dpersist = if_else(nextrun == run, dpersist, 0)) %>%
+#   select(-pltmean_base, -tltmean_base, -dp, -dt, 
+#          -pave_annual, -tave_annual)
+# 
+# # For each run, find average dry & dpersist in eras ---------------------------
+# #    (result is total dpersist per decade)
+# q.frun.drytest <- q_met.fannual.drytest %>%
+#   select(run, rcp, era, dqltsd, dry, dpersist) %>%
+#   group_by(run, rcp, era) %>%
+#   summarise(sum_persist = round(sum(dpersist)/2, 1),
+#             sum_dry = round(sum(dry)/2, 1)) %>%
+#   ungroup()
+# 
+# # Add to original q.frun.stats.df -------------------------------------------
+# q.frun.ltstats.df <- left_join(q.frun.ltstats.df, q.frun.drytest, 
+#                                by = c("run", "era"))
+# 
+# Summarise lt stats by rcp ---------------------------------------------------
+#   - this is just really for graphing
+q.rcpmedians <- q.frun.ltstats.df %>%
+  group_by(rcp, era) %>%
+  summarise(dqltmean_rcpmedian = median(qltmean),
+            qltsd_rcpmedian = median(qltsd),
+            qltmin_rcpmedian = median(qltmin),
+            qlt01_rcpmedian = median(qlt01),
+            qlt05_rcpmedian = median(qlt05),
+            qlt25_rcpmedian = median(qlt25),
+            qlt50_rcpmedian = median(qlt50),
+            qlt75_rcpmedian = median(qlt75),
+            qlt95_rcpmedian = median(qlt95),
+            qlt99_rcpmedian = median(qlt99)
+            # dry_rcpmedian = round(median(sum_dry),3),
+            # dpersist_rcpmedian = round(median(sum_persist), 3)) %>%
+  ) %>%
+  ungroup()
+
+# Calculate quantiles of qltmean == qfrac_ltmean ------------------------------
+#   - this df provides the limits used to define cc scenarios
+#   - delete rcp = obs_prism and obs_br
+qfrac_ltmean.stats <- q.frun.ltstats.df %>%
+  filter(!(rcp == "obs_prism")) %>%
+  filter(!(rcp == "obs_br")) %>%
+  group_by(era) %>%
+  summarise(qltmean_min = min(qltmean),
+            qltmean_010 = quantile(qltmean, probs = 0.01, na.rm = TRUE),
+            qltmean_025 = quantile(qltmean, probs = 0.025, na.rm = TRUE),
+            qltmean_050 = quantile(qltmean, probs = 0.05, na.rm = TRUE),
+            qltmean_100 = quantile(qltmean, probs = 0.10, na.rm = TRUE),
+            qltmean_175 = quantile(qltmean, probs = 0.175, na.rm = TRUE),
+            qltmean_200 = quantile(qltmean, probs = 0.20, na.rm = TRUE),
+            qltmean_250 = quantile(qltmean, probs = 0.25, na.rm = TRUE),
+            qltmean_325 = quantile(qltmean, probs = 0.325, na.rm = TRUE),
+            qltmean_400 = quantile(qltmean, probs = 0.400, na.rm = TRUE),
+            qltmean_425 = quantile(qltmean, probs = 0.425, na.rm = TRUE),
+            qltmean_500 = quantile(qltmean, probs = 0.50, na.rm = TRUE),
+            qltmean_575 = quantile(qltmean, probs = 0.575, na.rm = TRUE),
+            qltmean_600 = quantile(qltmean, probs = 0.600, na.rm = TRUE),
+            qltmean_675 = quantile(qltmean, probs = 0.675, na.rm = TRUE),
+            qltmean_750 = quantile(qltmean, probs = 0.75, na.rm = TRUE),
+            qltmean_800 = quantile(qltmean, probs = 0.800, na.rm = TRUE),
+            qltmean_825 = quantile(qltmean, probs = 0.825, na.rm = TRUE),
+            qltmean_900 = quantile(qltmean, probs = 0.90, na.rm = TRUE),
+            qltmean_950 = quantile(qltmean, probs = 0.95, na.rm = TRUE),
+            qltmean_975 = quantile(qltmean, probs = 0.975, na.rm = TRUE),
+            qltmean_990 = quantile(qltmean, probs = 0.990, na.rm = TRUE),
+            qltmean_max = max(qltmean)) %>%
+  mutate_all(round, 2) %>%
+  ungroup()
+
+# Prepare for graphing --------------------------------------------------------
+#   (dry and dpersist are so boring don't bother graphing)
+q.rcp.stats.long <- q.rcpmedians %>%
+  tidyr::gather(key = "stat", value = "val", -rcp, -era)
+
+q_mean_sd <- q.rcp.stats.long %>%
+    dplyr::filter(stat == "qltmean_rcpmedian" | stat == "qltsd_rcpmedian")
+q_q10_q90 <- q.rcp.stats.long %>%
+    dplyr::filter(stat == "qlt10_rcpmedian" | stat == "qlt25_rcpmedian"
+                  | stat == "qlt50_rcpmedian" | stat == "qlt75_rcpmedian" 
+                  | stat == "qlt90_rcpmedian" | stat == "qltmin_rcpmedian")
+
+qfrac_ltmean.stats.long <- qfrac_ltmean.stats %>%
+  tidyr::gather(key = "stat", value = "val", -era)
+
+qfrac_ltmean_q10_q90 <- qfrac_ltmean.stats.long %>%
+    dplyr::filter(stat == "qltmean_100"
+                  | stat == "qltmean_250"
+                  | stat == "qltmean_500" | stat == "qltmean_750"
+                  | stat == "qltmean_900")
+
+```
+
+First, a table of the stats for the filtered runs - to allow comparison of observed and simulated (need to add PRISM obs stats by hand).
+
+```{r}
+# Print out some stats for the report
+knitr::kable(qpt_display)
+```
+
+```{r include=FALSE}
+# ggplot(data = q_mean_sd, aes(x = era, y = val))  +
+#   geom_line(aes(linetype = rcp, colour = stat)) +
+#   ggtitle("dq medians by RCP of filtered run mins and stdevs") +
+#   labs(x = "Year", y = "Percent change in flow from mean baseline")
+ggplot(data = q_q10_q90, aes(x = era, y = val))  +
+  geom_line(aes(linetype = rcp, colour = stat)) +
+  ggtitle("Medians of filtered runs long-term quantiles") +
+  labs(x = "Year", y = "Percent change in flow from mean baseline")
+ggplot(data = qfrac_ltmean_q10_q90, aes(x = era, y = val))  +
+  geom_line(aes(colour = stat)) +
+  ggtitle("Quantiles of all filtered run long-term means") +
+  labs(x = "Year", y = "Percent change in flow from mean baseline")
+```
+## Climate change scenarios
+
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Develop climate change scenarios
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# CAREFUL! - row 4 is 2055 right now but could change -------------------------
+#    - Now grouping by ltmean in era = 2055
+limits <- qfrac_ltmean.stats[4,] 
+
+# cc90_lowerlim <- limits$qltmean_025[1]
+cc90_upperlim <- limits$qltmean_200[1]
+cc70_lowerlim <- limits$qltmean_200[1]
+cc70_upperlim <- limits$qltmean_400[1]
+cc50_lowerlim <- limits$qltmean_400[1]
+cc50_upperlim <- limits$qltmean_600[1]
+cc30_lowerlim <- limits$qltmean_600[1]
+cc30_upperlim <- limits$qltmean_800[1]
+cc10_lowerlim <- limits$qltmean_800[1]
+# cc10_upperlim <- limits$qltmean_975[1]
+
+
+# Look at pools of run results, by year, --------------------------------------
+#    with 1995 lt means close to 10, 25, 50, 75, and 90th percentiles
+
+q_cc90.runs.df <- q_met.fannual.df %>%
+  dplyr::filter(qfrac_ltmean_2055 < cc90_upperlim) %>%
+  dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
+
+q_cc70.runs.df <- q_met.fannual.df %>%
+  dplyr::filter(qfrac_ltmean_2055 >= cc70_lowerlim &
+                  qfrac_ltmean_2055 < cc70_upperlim) %>%
+  dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
+
+q_cc50.runs.df <- q_met.fannual.df %>%
+  dplyr::filter(qfrac_ltmean_2055 >= cc50_lowerlim &
+                  qfrac_ltmean_2055 < cc50_upperlim) %>%
+  dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
+
+q_cc30.runs.df <- q_met.fannual.df %>%
+  dplyr::filter(qfrac_ltmean_2055 >= cc30_lowerlim &
+                  qfrac_ltmean_2055 < cc30_upperlim) %>%
+  dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
+
+q_cc10.runs.df <- q_met.fannual.df %>%
+  dplyr::filter(qfrac_ltmean_2055 >= cc10_lowerlim) %>%
+  dplyr::select(year, era, run, qfracr, pave_annual, tave_annual)
+
+q_cc90 <- q_cc90.runs.df %>%
+    filter(!(run == "obs") & !(run == "obs_prism")) %>%
+  group_by(era) %>%
+  summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 4),
+            dqrlt005 = round(quantile(qfracr, probs = 0.005, na.rm = TRUE), 4),
+            dqrlt01 = round(quantile(qfracr, probs = 0.01, na.rm = TRUE), 4),
+            dqrlt02 = round(quantile(qfracr, probs = 0.02, na.rm = TRUE), 4),
+            dqrlt05 = round(quantile(qfracr, probs = 0.05, na.rm = TRUE), 4),
+            dqrlt10 = round(quantile(qfracr, probs = 0.10, na.rm = TRUE), 4),
+            dqrlt25 = round(quantile(qfracr, probs = 0.25, na.rm = TRUE), 4),
+            dqrlt35 = round(quantile(qfracr, probs = 0.35, na.rm = TRUE), 4),
+            dqrlt50 = round(quantile(qfracr, probs = 0.50, na.rm = TRUE), 4),
+            dqrlt65 = round(quantile(qfracr, probs = 0.65, na.rm = TRUE), 4),
+            dqrlt75 = round(quantile(qfracr, probs = 0.75, na.rm = TRUE), 4),
+            dqrlt90 = round(quantile(qfracr, probs = 0.90, na.rm = TRUE), 4),
+            dqrlt95 = round(quantile(qfracr, probs = 0.95, na.rm = TRUE), 4),
+            dqrlt98 = round(quantile(qfracr, probs = 0.98, na.rm = TRUE), 4),
+            dqrlt99 = round(quantile(qfracr, probs = 0.99, na.rm = TRUE), 4),
+            dqrlt995 = round(quantile(qfracr, probs = 0.995, na.rm = TRUE), 4),
+            dqrlt999 = round(quantile(qfracr, probs = 0.999, na.rm = TRUE), 4), 
+            dqrcount = n(),
+            dqrmean = round(mean(qfracr), 2),
+            dqrsd = round(sd(qfracr), 2),
+            pltave = round(mean(pave_annual)),
+            tltave = round(mean(tave_annual), 2)
+            ) %>%
+  ungroup()
+
+q_cc90_long <- q_cc90 %>%
+  dplyr::mutate(era = as.integer(era)) %>%
+  dplyr::select(-dqrcount, -dqrsd, -pltave, -tltave,
+                -dqrlt35, -dqrlt65, -dqrmean) %>%
+  tidyr::gather(key = "stat", value = "val", -era)
+
+q_cc70 <- q_cc70.runs.df %>%
+    filter(!(run == "obs") & !(run == "obs_prism")) %>%
+  group_by(era) %>%
+  summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 4),
+            dqrlt005 = round(quantile(qfracr, probs = 0.005, na.rm = TRUE), 4),
+            dqrlt01 = round(quantile(qfracr, probs = 0.01, na.rm = TRUE), 4),
+            dqrlt02 = round(quantile(qfracr, probs = 0.02, na.rm = TRUE), 4),
+            dqrlt05 = round(quantile(qfracr, probs = 0.05, na.rm = TRUE), 4),
+            dqrlt10 = round(quantile(qfracr, probs = 0.10, na.rm = TRUE), 4),
+            dqrlt25 = round(quantile(qfracr, probs = 0.25, na.rm = TRUE), 4),
+            dqrlt35 = round(quantile(qfracr, probs = 0.35, na.rm = TRUE), 4),
+            dqrlt50 = round(quantile(qfracr, probs = 0.50, na.rm = TRUE), 4),
+            dqrlt65 = round(quantile(qfracr, probs = 0.65, na.rm = TRUE), 4),
+            dqrlt75 = round(quantile(qfracr, probs = 0.75, na.rm = TRUE), 4),
+            dqrlt90 = round(quantile(qfracr, probs = 0.90, na.rm = TRUE), 4),
+            dqrlt95 = round(quantile(qfracr, probs = 0.95, na.rm = TRUE), 4),
+            dqrlt98 = round(quantile(qfracr, probs = 0.98, na.rm = TRUE), 4),
+            dqrlt99 = round(quantile(qfracr, probs = 0.99, na.rm = TRUE), 4),
+            dqrlt995 = round(quantile(qfracr, probs = 0.995, na.rm = TRUE), 4),
+            dqrlt999 = round(quantile(qfracr, probs = 0.999, na.rm = TRUE), 4), 
+            dqrcount = n(),
+            dqrmean = round(mean(qfracr), 2),
+            dqrsd = round(sd(qfracr), 2),
+            pltave = round(mean(pave_annual)),
+            tltave = round(mean(tave_annual), 2)
+              ) %>%
+  ungroup()
+q_cc70_long <- q_cc70 %>%
+  dplyr::mutate(era = as.integer(era)) %>%
+  dplyr::select(-dqrcount, -dqrsd, -pltave, -tltave,
+                -dqrlt35, -dqrlt65, -dqrmean) %>%
+  tidyr::gather(key = "stat", value = "val", -era)
+
+q_cc50 <- q_cc50.runs.df %>%
+    filter(!(run == "obs") & !(run == "obs_prism")) %>%
+  group_by(era) %>%
+  summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 4),
+            dqrlt005 = round(quantile(qfracr, probs = 0.005, na.rm = TRUE), 4),
+            dqrlt01 = round(quantile(qfracr, probs = 0.01, na.rm = TRUE), 4),
+            dqrlt02 = round(quantile(qfracr, probs = 0.02, na.rm = TRUE), 4),
+            dqrlt05 = round(quantile(qfracr, probs = 0.05, na.rm = TRUE), 4),
+            dqrlt10 = round(quantile(qfracr, probs = 0.10, na.rm = TRUE), 4),
+            dqrlt25 = round(quantile(qfracr, probs = 0.25, na.rm = TRUE), 4),
+            dqrlt35 = round(quantile(qfracr, probs = 0.35, na.rm = TRUE), 4),
+            dqrlt50 = round(quantile(qfracr, probs = 0.50, na.rm = TRUE), 4),
+            dqrlt65 = round(quantile(qfracr, probs = 0.65, na.rm = TRUE), 4),
+            dqrlt75 = round(quantile(qfracr, probs = 0.75, na.rm = TRUE), 4),
+            dqrlt90 = round(quantile(qfracr, probs = 0.90, na.rm = TRUE), 4),
+            dqrlt95 = round(quantile(qfracr, probs = 0.95, na.rm = TRUE), 4),
+            dqrlt98 = round(quantile(qfracr, probs = 0.98, na.rm = TRUE), 4),
+            dqrlt99 = round(quantile(qfracr, probs = 0.99, na.rm = TRUE), 4),
+            dqrlt995 = round(quantile(qfracr, probs = 0.995, na.rm = TRUE), 4),
+            dqrlt999 = round(quantile(qfracr, probs = 0.999, na.rm = TRUE), 4), 
+            dqrcount = n(),
+            dqrmean = round(mean(qfracr), 2),
+            dqrsd = round(sd(qfracr), 2),
+            pltave = round(mean(pave_annual)),
+            tltave = round(mean(tave_annual), 2)
+              ) %>%
+  ungroup()
+q_cc50_long <- q_cc50 %>%
+  dplyr::mutate(era = as.integer(era)) %>%
+  dplyr::select(-dqrcount, -dqrsd, -pltave, -tltave,
+                -dqrlt35, -dqrlt65, -dqrmean) %>%
+  tidyr::gather(key = "stat", value = "val", -era)
+
+q_cc30 <- q_cc30.runs.df %>%
+    filter(!(run == "obs") & !(run == "obs_prism")) %>%
+  group_by(era) %>%
+  summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 4),
+            dqrlt005 = round(quantile(qfracr, probs = 0.005, na.rm = TRUE), 4),
+            dqrlt01 = round(quantile(qfracr, probs = 0.01, na.rm = TRUE), 4),
+            dqrlt02 = round(quantile(qfracr, probs = 0.02, na.rm = TRUE), 4),
+            dqrlt05 = round(quantile(qfracr, probs = 0.05, na.rm = TRUE), 4),
+            dqrlt10 = round(quantile(qfracr, probs = 0.10, na.rm = TRUE), 4),
+            dqrlt25 = round(quantile(qfracr, probs = 0.25, na.rm = TRUE), 4),
+            dqrlt35 = round(quantile(qfracr, probs = 0.35, na.rm = TRUE), 4),
+            dqrlt50 = round(quantile(qfracr, probs = 0.50, na.rm = TRUE), 4),
+            dqrlt65 = round(quantile(qfracr, probs = 0.65, na.rm = TRUE), 4),
+            dqrlt75 = round(quantile(qfracr, probs = 0.75, na.rm = TRUE), 4),
+            dqrlt90 = round(quantile(qfracr, probs = 0.90, na.rm = TRUE), 4),
+            dqrlt95 = round(quantile(qfracr, probs = 0.95, na.rm = TRUE), 4),
+            dqrlt98 = round(quantile(qfracr, probs = 0.98, na.rm = TRUE), 4),
+            dqrlt99 = round(quantile(qfracr, probs = 0.99, na.rm = TRUE), 4),
+            dqrlt995 = round(quantile(qfracr, probs = 0.995, na.rm = TRUE), 4),
+            dqrlt999 = round(quantile(qfracr, probs = 0.999, na.rm = TRUE), 4), 
+            dqrcount = n(),
+            dqrmean = round(mean(qfracr), 2),
+            dqrsd = round(sd(qfracr), 2),
+            pltave = round(mean(pave_annual)),
+            tltave = round(mean(tave_annual), 2)
+              ) %>%
+  ungroup()
+q_cc30_long <- q_cc30 %>%
+  dplyr::mutate(era = as.integer(era)) %>%
+  dplyr::select(-dqrcount, -dqrsd, -pltave, -tltave,
+                -dqrlt35, -dqrlt65, -dqrmean) %>%
+  tidyr::gather(key = "stat", value = "val", -era)
+
+q_cc10 <- q_cc10.runs.df %>%
+    filter(!(run == "obs") & !(run == "obs_prism")) %>%
+  group_by(era) %>%
+  summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 4),
+            dqrlt005 = round(quantile(qfracr, probs = 0.005, na.rm = TRUE), 4),
+            dqrlt01 = round(quantile(qfracr, probs = 0.01, na.rm = TRUE), 4),
+            dqrlt02 = round(quantile(qfracr, probs = 0.02, na.rm = TRUE), 4),
+            dqrlt05 = round(quantile(qfracr, probs = 0.05, na.rm = TRUE), 4),
+            dqrlt10 = round(quantile(qfracr, probs = 0.10, na.rm = TRUE), 4),
+            dqrlt25 = round(quantile(qfracr, probs = 0.25, na.rm = TRUE), 4),
+            dqrlt35 = round(quantile(qfracr, probs = 0.35, na.rm = TRUE), 4),
+            dqrlt50 = round(quantile(qfracr, probs = 0.50, na.rm = TRUE), 4),
+            dqrlt65 = round(quantile(qfracr, probs = 0.65, na.rm = TRUE), 4),
+            dqrlt75 = round(quantile(qfracr, probs = 0.75, na.rm = TRUE), 4),
+            dqrlt90 = round(quantile(qfracr, probs = 0.90, na.rm = TRUE), 4),
+            dqrlt95 = round(quantile(qfracr, probs = 0.95, na.rm = TRUE), 4),
+            dqrlt98 = round(quantile(qfracr, probs = 0.98, na.rm = TRUE), 4),
+            dqrlt99 = round(quantile(qfracr, probs = 0.99, na.rm = TRUE), 4),
+            dqrlt995 = round(quantile(qfracr, probs = 0.995, na.rm = TRUE), 4),
+            dqrlt999 = round(quantile(qfracr, probs = 0.999, na.rm = TRUE), 4), 
+            dqrcount = n(),
+            dqrmean = round(mean(qfracr), 2),
+            dqrsd = round(sd(qfracr), 2),
+            pltave = round(mean(pave_annual)),
+            tltave = round(mean(tave_annual), 2)
+              ) %>%
+  ungroup()
+q_cc10_long <- q_cc10 %>%
+  dplyr::mutate(era = as.integer(era)) %>%
+  dplyr::select(-dqrcount, -dqrsd, -pltave, -tltave,
+                -dqrlt35, -dqrlt65, -dqrmean) %>%
+  tidyr::gather(key = "stat", value = "val", -era)
+
+q_ccall <- q_met.fannual.df %>%
+  filter(!(run == "obs") & !(run == "obs_nclim")) %>%
+    group_by(era) %>%
+  summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 4),
+            dqrlt005 = round(quantile(qfracr, probs = 0.005, na.rm = TRUE), 4),
+            dqrlt01 = round(quantile(qfracr, probs = 0.01, na.rm = TRUE), 4),
+            dqrlt02 = round(quantile(qfracr, probs = 0.02, na.rm = TRUE), 4),
+            dqrlt05 = round(quantile(qfracr, probs = 0.05, na.rm = TRUE), 4),
+            dqrlt10 = round(quantile(qfracr, probs = 0.10, na.rm = TRUE), 4),
+            dqrlt25 = round(quantile(qfracr, probs = 0.25, na.rm = TRUE), 4),
+            dqrlt35 = round(quantile(qfracr, probs = 0.35, na.rm = TRUE), 4),
+            dqrlt50 = round(quantile(qfracr, probs = 0.50, na.rm = TRUE), 4),
+            dqrlt65 = round(quantile(qfracr, probs = 0.65, na.rm = TRUE), 4),
+            dqrlt75 = round(quantile(qfracr, probs = 0.75, na.rm = TRUE), 4),
+            dqrlt90 = round(quantile(qfracr, probs = 0.90, na.rm = TRUE), 4),
+            dqrlt95 = round(quantile(qfracr, probs = 0.95, na.rm = TRUE), 4),
+            dqrlt98 = round(quantile(qfracr, probs = 0.98, na.rm = TRUE), 4),
+            dqrlt99 = round(quantile(qfracr, probs = 0.99, na.rm = TRUE), 4),
+            dqrlt995 = round(quantile(qfracr, probs = 0.995, na.rm = TRUE), 4),
+            dqrlt999 = round(quantile(qfracr, probs = 0.999, na.rm = TRUE), 4),
+            # dqrmax = round(max(qfracr), 2), 
+            dqrcount = n(),
+            dqrmean = round(mean(qfracr), 2),
+            dqrsd = round(sd(qfracr), 2),
+            pltave = round(mean(pave_annual)),
+            tltave = round(mean(tave_annual), 2)
+              ) %>%
+  ungroup()
+
+# Create q_ccall_long for plotting --------------------------------------------
+q_ccall_long <- q_ccall %>%
+  dplyr::mutate(
+    era = as.integer(era),
+                q01_mm = dqrlt01*qbar,
+                q10_mm = dqrlt10*qbar, q50_mm = dqrlt50*qbar,
+                q90_mm = dqrlt90*qbar, q99_mm = dqrlt99*qbar) %>%
+  dplyr::select(era, q01_mm, q10_mm, q50_mm, 
+                q90_mm, q99_mm) %>%
+  tidyr::gather(key = "stat", value = "val", -era)
+
+q_obs <- q_met.fannual.df %>%
+  filter((run == "obs") | (run == "obs_prism")) %>%
+  group_by(era, rcp.x) %>%
+  summarise(dqrlt001 = round(quantile(qfracr, probs = 0.001, na.rm = TRUE), 2),
+            dqrlt01 = round(quantile(qfracr, probs = 0.01, na.rm = TRUE), 2),
+            dqrlt02 = round(quantile(qfracr, probs = 0.02, na.rm = TRUE), 2),
+            dqrlt05 = round(quantile(qfracr, probs = 0.05, na.rm = TRUE), 2),
+            dqrlt10 = round(quantile(qfracr, probs = 0.10, na.rm = TRUE), 2),
+            dqrlt25 = round(quantile(qfracr, probs = 0.25, na.rm = TRUE), 2),
+            dqrlt35 = round(quantile(qfracr, probs = 0.35, na.rm = TRUE), 2),
+            dqrlt50 = round(quantile(qfracr, probs = 0.50, na.rm = TRUE), 2),
+            dqrlt65 = round(quantile(qfracr, probs = 0.65, na.rm = TRUE), 2),
+            dqrlt75 = round(quantile(qfracr, probs = 0.75, na.rm = TRUE), 2),
+            dqrlt90 = round(quantile(qfracr, probs = 0.90, na.rm = TRUE), 2),
+            dqrlt95 = round(quantile(qfracr, probs = 0.95, na.rm = TRUE), 2),
+            dqrlt98 = round(quantile(qfracr, probs = 0.98, na.rm = TRUE), 2),
+            dqrlt99 = round(quantile(qfracr, probs = 0.99, na.rm = TRUE), 2),
+            dqrlt999 = round(quantile(qfracr, probs = 0.999, na.rm = TRUE), 2),
+            # dqrmax = round(max(qfracr), 2), 
+            dqrcount = n(),
+            dqrmean = round(mean(qfracr), 2),
+            dqrsd = round(sd(qfracr), 2),
+            pltave = round(mean(pave_annual)),
+            tltave = round(mean(tave_annual), 2)
+              ) %>%
+  ungroup()
+
+# Want some sort of summary table ---------------------------------------------
+q_cc90_small <- q_cc90 %>%
+  mutate(group = "verydry", tltave = round(tltave, 1), 
+         nruns = round(dqrcount/30, 0)) %>%
+  filter(era == 1965 | era == 1995 | era == 2025 
+         | era == 2055 | era == 2085) %>%
+  select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
+
+q_summary <- q_cc90_small
+
+q_cc70_small <- q_cc70 %>%
+  mutate(group = "moddry", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
+  filter(era == 1965 | era == 1995 | era == 2025 
+         | era == 2055 | era == 2085) %>%
+  select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
+
+q_summary <- rbind(q_summary, q_cc70_small)
+
+q_cc50_small <- q_cc50 %>%
+  mutate(group = "ave", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
+  filter(era == 1965 | era == 1995 | era == 2025 
+         | era == 2055 | era == 2085) %>%
+  select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
+
+q_summary <- rbind(q_summary, q_cc50_small)
+
+q_cc30_small <- q_cc30 %>%
+  mutate(group = "modwet", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
+  filter(era == 1965 | era == 1995 | era == 2025 
+         | era == 2055 | era == 2085) %>%
+  select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
+
+q_summary <- rbind(q_summary, q_cc30_small)
+
+q_cc10_small <- q_cc10 %>%
+  mutate(group = "verywet", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
+  filter(era == 1965 | era == 1995 | era == 2025 
+         | era == 2055 | era == 2085) %>%
+  select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
+
+q_summary <- rbind(q_summary, q_cc10_small)
+
+q_ccall_small <- q_ccall %>%
+  mutate(group = "allruns", tltave = round(tltave, 1), nruns = dqrcount/30) %>%
+  filter(era == 1965 | era == 1995 | era == 2025 
+         | era == 2055 | era == 2085) %>%
+  select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
+
+q_summary <- rbind(q_summary, q_ccall_small)
+
+q_obs_small <- q_obs %>%
+  mutate(group = rcp.x, tltave = round(tltave, 1), nruns = dqrcount/30) %>%
+  filter(era == 1965 | era == 1995 | era == 2025 
+         | era == 2055 | era == 2085) %>%
+  select(group, era, nruns, dqrmean, dqrsd, pltave, tltave)
+
+q_summary <- rbind(q_summary, q_obs_small) %>%
+  mutate(nruns = round(nruns, 0))
+```
+
+```{r}
+# Print out summary table
+knitr::kable(q_summary)
+```
+
+```{r}
+ggplot(data = q_ccall_long, aes(x = era, y = val))  +
+  geom_line(aes(colour = stat)) +
+  ggtitle("Projected trends in flow percentiles") +
+  scale_y_continuous(name = "Flow, mm/year", 
+                     limits = c(0, 800), breaks = seq(0, 800, 100)) +
+  scale_x_continuous(name = "Year",
+                     breaks = c(1960, 1990, 2020, 2050, 2080)) +
+  scale_colour_manual(labels = c("1st percentile",
+    "10th percentile", "50th percentile", "90th percentile", 
+    "99th percentile"),
+                      name = "Statistic",
+                      values = c("red",  "darkorange1", "burlywood4", 
+                                 "turquoise2", "blue")) 
+
+```
+
+```{r include=FALSE}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Make tables of quantile scale factors
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Compute mean lfalls_nat flow (mm) for 1897-1979 (model calibration period) --
+#   - this should be the same as qbar
+qbar_base <- lfalls_annual.df00 %>%
+  filter(year > 1896 & year < 1980)
+qbar_base <- mean(qbar_base$q_mm)
+
+# Compute q_obs_frac
+lfalls_annual.df0 <- lfalls_annual.df00 %>%
+  dplyr::mutate(q_obs_frac = round(q_mm/qbar_base, 5)) %>%
+  select(-qave_annual_cfs)
+
+# Compute quantiles for 1896-2009 (n=114)
+#   - but have yet removed impact of climate from 1980-2009
+n_flows <- 114
+# I've seen i/(n+1) as empirical cdf here and there in hydrology
+#   - problem with cume_dist - it gives 1972 quantile as 1.0 
+#   - want it smaller so that 1996 and 2003 can be assigned values
+lfalls_annual_1896to2009.df0 <- lfalls_annual.df0 %>%
+  filter(year >= 1896 & year < 2010) %>%
+  arrange(q_obs_frac) %>%
+  # dplyr::mutate(quantiles = round(cume_dist(q_obs_frac), 5))
+    dplyr::mutate(quantiles = round(row_number(q_obs_frac)/(n_flows + 1), 5))
+
+# Apply quantile mapping  -----------------------------------------------------
+
+quantiles <- c(0.001, 0.005, 0.01, 0.02, 0.05, 0.10, 0.25, 0.35, 0.50,
+               0.65, 0.75, 0.90, 0.95, 0.98, 0.99, 0.995, 1.00) # 0.999 -> 1.00
+
+# All runs, q_ccall -----------------------------------------------------------
+# Start with q_ccall; look at all eras; transpose
+qm_ccall <- q_ccall %>% 
+  # filter(era %in% c(1965, 2055)) %>%
+  mutate(eratxt = c("t1965", "t1995", "t2025", "t2055", "t2085")) %>%  
+  select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
+  gather(newrows, values, -eratxt) %>%
+  spread(eratxt, values)
+
+# Compute flow scale factors from base era to all other eras
+qm_ccall <- qm_ccall %>%
+  cbind(quantiles) %>%
+  # select(newrows, quantiles, t1965, t1995, t2025, t2055, t2085) %>%
+  mutate(qscaleall_to1995 = round(t1995/t1965, 3),
+         qscaleall_to2025 = round(t2025/t1965, 3),
+         qscaleall_to2055 = round(t2055/t1965, 3),
+         qscaleall_to2085 = round(t2085/t1965, 3)) %>%
+  select(-t1965, -t1995, -t2025, -t2055, -t2085)
+
+qm_ccall_display <- qm_ccall %>%
+  select(-newrows) %>%
+  mutate_at(2:5, round, 2)
+
+# Add quantile mapping values
+qscaleall0 <- qm_ccall %>%
+  full_join(lfalls_annual_1896to2009.df0, by = "quantiles") %>%
+  mutate(qscaleall_to1995_temp = qscaleall_to1995) %>%
+  arrange(quantiles)
+
+# Use na.approx to fill in the NA's using linear interpolation
+qscaleall0$qscaleall_to1995_temp <- 
+  zoo::na.approx(qscaleall0$qscaleall_to1995_temp, qscaleall0$quantiles)
+
+# Scale back 1980-2009 flows by dividing by qscaleall_to1995_temp
+qscale_1896to2009.df0 <- qscaleall0 %>%
+  mutate(q_mm_orig = q_mm,
+         q_mm = case_when(
+    year < 1980 ~ q_mm,
+    year >= 1980 ~ q_mm/qscaleall_to1995_temp,
+    TRUE ~ -999), 
+    q_obs_frac_orig = q_obs_frac,
+    q_obs_frac = case_when(
+      year < 1980 ~ q_obs_frac,
+      year >= 1980 ~ q_obs_frac/qscaleall_to1995_temp,
+      TRUE ~ -999),
+    q_mm = round(q_mm, 1),
+    q_obs_frac = round(q_obs_frac, 3),
+    q_mm_orig = round(q_mm_orig, 1),
+    q_obs_frac_orig = round(q_obs_frac_orig, 3),
+    quantiles_orig = quantiles)
+
+# Now redo the process above - since flow ts has changed a bit
+lfalls_annual_1896to2009.df <- qscale_1896to2009.df0 %>%
+  filter(!(year == "NA")) %>%
+  select(year, q_mm, q_mm_orig, q_obs_frac, q_obs_frac_orig, 
+         quantiles_orig) %>%
+    arrange(q_obs_frac) %>%
+  # dplyr::mutate(quantiles = round(cume_dist(q_obs_frac), 5))
+    dplyr::mutate(quantiles = round(row_number(q_obs_frac)/(n_flows + 1), 5))
+
+# Add quantile mapping values
+qscaleall <- qm_ccall %>%
+  full_join(lfalls_annual_1896to2009.df, by = "quantiles") %>%
+  arrange(quantiles)
+
+# Use na.approx to fill in the NA's using linear interpolation
+qscaleall$qscaleall_to1995 <- zoo::na.approx(qscaleall$qscaleall_to1995, qscaleall$quantiles)
+qscaleall$qscaleall_to2025 <- zoo::na.approx(qscaleall$qscaleall_to2025, qscaleall$quantiles)
+qscaleall$qscaleall_to2055 <- zoo::na.approx(qscaleall$qscaleall_to2055, qscaleall$quantiles)
+qscaleall$qscaleall_to2085 <- zoo::na.approx(qscaleall$qscaleall_to2085, qscaleall$quantiles)
+
+qscale_1896to2009.df <- qscaleall %>%
+  mutate(qscaleall_to1995 = round(qscaleall_to1995, 3),
+         qscaleall_to2025 = round(qscaleall_to2025, 3),
+         qscaleall_to2055 = round(qscaleall_to2055, 3),
+         qscaleall_to2085 = round(qscaleall_to2085, 3)) %>%
+    drop_na(year) %>%
+  select(quantiles, quantiles_orig, year, q_mm, q_obs_frac,
+         qscaleall_to1995, qscaleall_to2025, qscaleall_to2055,
+         qscaleall_to2085) %>%
+  arrange(year)
+
+# Callect other scale factors for display only --------------------------------
+
+# Median scenario: cc50 -------------------------------------------------------
+# Start with dq_cc50; just look at eras 1965 and 2055; transpose
+qm_cc50 <- q_cc50 %>% 
+  filter(era %in% c(1965, 2055)) %>%
+  mutate(eratxt = c("t1965", "t2055")) %>%  
+  select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
+  gather(newrows, values, -eratxt) %>%
+  spread(eratxt, values)
+
+# Add column with numeric quantile values to replace text quantile values
+#   - e.g. dqrlt01 -> 0.01; compute the quantile mapping values
+qm_cc50 <- qm_cc50 %>%
+  cbind(quantiles) %>%
+  select(newrows, quantiles, t1965, t2055) %>%
+  mutate(qscale_cc50 = round(t2055/t1965, 2))
+
+# Moderately dry: cc70 --------------------------------------------------------
+# Start with dq_cc70; just look at eras 1965 and 2055; transpose
+qm_cc70 <- q_cc70 %>% 
+  filter(era %in% c(1965, 2055)) %>%
+  mutate(eratxt = c("t1965", "t2055")) %>%  
+  select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
+  gather(newrows, values, -eratxt) %>%
+  spread(eratxt, values)
+
+# Add column with numeric quantile values to replace text quantile values
+qm_cc70 <- qm_cc70 %>%
+  cbind(quantiles) %>%
+  select(newrows, quantiles, t1965, t2055) %>%
+  mutate(qscale_cc70 = round(t2055/t1965, 2))
+
+# Severely dry: cc90 ----------------------------------------------------------
+# Start with dq_cc90; just look at eras 1965 and 2055; transpose
+qm_cc90 <- q_cc90 %>% 
+  filter(era %in% c(1965, 2055)) %>%
+  mutate(eratxt = c("t1965", "t2055")) %>%  
+  select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
+  gather(newrows, values, -eratxt) %>%
+  spread(eratxt, values)
+
+# Add column with numeric quantile values to replace text quantile values
+qm_cc90 <- qm_cc90 %>%
+  cbind(quantiles) %>%
+  select(newrows, quantiles, t1965, t2055) %>%
+  mutate(qscale_cc90 = round(t2055/t1965, 2))
+
+# Moderately wet: cc30 --------------------------------------------------------
+# Start with dq_cc30; just look at eras 1965 and 2055; transpose
+qm_cc30 <- q_cc30 %>% 
+  filter(era %in% c(1965, 2055)) %>%
+  mutate(eratxt = c("t1965", "t2055")) %>%  
+  select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
+  gather(newrows, values, -eratxt) %>%
+  spread(eratxt, values)
+
+# Add column with numeric quantile values to replace text quantile values
+qm_cc30 <- qm_cc30 %>%
+  cbind(quantiles) %>%
+  select(newrows, quantiles, t1965, t2055) %>%
+  mutate(qscale_cc30 = round(t2055/t1965, 2))
+
+# Very wet: cc10 --------------------------------------------------------------
+# Start with dq_cc10; just look at eras 1965 and 2055; transpose
+qm_cc10 <- q_cc10 %>% 
+  filter(era %in% c(1965, 2055)) %>%
+  mutate(eratxt = c("t1965", "t2055")) %>%  
+  select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
+  gather(newrows, values, -eratxt) %>%
+  spread(eratxt, values)
+
+# Add column with numeric quantile values to replace text quantile values
+qm_cc10 <- qm_cc10 %>%
+  cbind(quantiles) %>%
+  select(newrows, quantiles, t1965, t2055) %>%
+  mutate(qscale_cc10 = round(t2055/t1965, 2))
+
+# Collect all original quantile mapping results for display -------------------
+qscale_scenarios <- left_join(qm_cc50, qm_cc70, by = "quantiles")
+qscale_scenarios <- left_join(qscale_scenarios, qm_cc90, by = "quantiles")
+qscale_scenarios <- left_join(qscale_scenarios, qm_cc10, by = "quantiles")
+qscale_scenarios <- left_join(qscale_scenarios, qm_cc30, by = "quantiles")
+qscale_scenarios <- left_join(qscale_scenarios, qm_ccall, by = "quantiles") %>%
+  mutate(qscale_vdry = qscale_cc90, qscale_dry = qscale_cc70,
+         qscale_average = qscale_cc50, qscale_wet = qscale_cc30,
+         qscale_vwet = qscale_cc10, 
+         qscale_planning = round(qscaleall_to2055, 2)) %>%
+  filter(quantiles > 0.001 & quantiles < 1.0) %>%
+  select(quantiles, qscale_vdry, qscale_dry, qscale_average,
+         qscale_wet, qscale_vwet,  qscale_planning)
+```
+
+## Scenario flow scaling factors
+
+First compare the sorted scenarios with the all-run planning scenario:
+
+```{r}
+# Print out summary table
+knitr::kable(qscale_scenarios)
+```
+
+Next, look at the scale factors for the all-run planning scenario, by era:
+
+```{r}
+knitr::kable(qm_ccall_display)
+```
+
+
+```{r}
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Write new flow time series file
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# The scale factors for annual flow are in qscale_1896to2009.df
+
+# Scale PRRISM daily input flows ----------------------------------------------
+# Read original PRRISM input flow time series
+#    - right now Oct-1929 through Dec-2013
+#    - units are MGD!
+prrism_flows_orig.df <- file.path("input/PRRISM_Flows.txt") %>%
+    data.table::fread(
+      data.table = FALSE,
+      header = FALSE,
+      col.names = c("sim_day", "sim_month", "year", "month", 
+                    "day", "jrr_inflow", "sav_inflow", "sen_inflow",
+                    "occ_inflow", "pat_inflow", 
+                    "por_no_nbr", "por_below", "lfalls_nat", 
+                    "beaverdam_inflow", "goose_inflow", 
+                    "manassas_nat_inflow", "x1"),
+      showProgress = FALSE) %>%
+  dplyr::mutate(date_time = as.Date(paste(year, month, day, sep = "-"))) %>%
+  dplyr::select(-x1) %>%  # delete last column - just NA's
+  dplyr::select(date_time, everything())
+
+# Scale PRRISM flows to 2040-2069 climate
+#    - inner join gives the intersection of years
+prrism_flows_ccall0 <- inner_join(prrism_flows_orig.df, 
+                                qscale_1896to2009.df, by = "year") %>%
+  mutate(jrr_inflow = round(jrr_inflow*qscaleall_to2055,1),
+         sav_inflow = round(sav_inflow*qscaleall_to2055,1),
+         sen_inflow = round(sen_inflow*qscaleall_to2055,2),
+         occ_inflow = round(occ_inflow*qscaleall_to2055,1),
+         pat_inflow = round(pat_inflow*qscaleall_to2055,1),
+         por_no_nbr = round(por_no_nbr*qscaleall_to2055,0),
+         por_below = round(por_below*qscaleall_to2055,0),
+         lfalls_nat = round(lfalls_nat*qscaleall_to2055,0), # must be lfalls_no_res!
+         beaverdam_inflow = round(beaverdam_inflow*qscaleall_to2055,2),
+         goose_inflow = round(goose_inflow*qscaleall_to2055,2),
+         manassas_nat_inflow = round(manassas_nat_inflow*qscaleall_to2055,2)) 
+
+prrism_flows_ccall <- prrism_flows_ccall0 %>%
+    select(-date_time, -quantiles, -quantiles_orig, 
+           -q_mm, -q_obs_frac, -qscaleall_to1995,
+           -qscaleall_to2025, -qscaleall_to2055, -qscaleall_to2085)
+
+write_path <- "output/"
+write_tsv(prrism_flows_ccall, paste(write_path, 
+                                    "PRRISM_Flows_",
+                                    output_version, "_",
+                                    output_date,
+                                    ".txt", sep = ""),
+          append = FALSE,
+          col_names = FALSE)
+write_csv(prrism_flows_ccall, paste(write_path, 
+                                    "prrism_Flows_",
+                                    output_version, "_",
+                                    output_date,
+                                    ".csv", sep = ""),
+          append = FALSE,
+          col_names = FALSE)
+
+# Scale Alimatou's tributary flows --------------------------------------------
+# First read her file with daily flows
+trib_flows_orig.df <- file.path("input/md_va_drought_gages_summary.csv") %>%
+    data.table::fread(
+      data.table = FALSE,
+      na.strings = c("#N/A", "NA", ""),
+      showProgress = FALSE) %>%
+  dplyr::mutate(date_time = as.Date(Date),
+                year = lubridate::year(date_time)) %>%
+  select(-Date) %>%
+  select(date_time, year, everything()) %>%
+  filter(year < 2010)
+
+# Scale trib flows to 2040-2069 climate
+#    - inner join gives the intersection of years
+trib_flows_ccall0 <- inner_join(trib_flows_orig.df, 
+                                qscale_1896to2009.df, by = "year") %>%
+  mutate(Accotink = round(Accotink*qscaleall_to2055,1),
+         Shenandoah = round(Shenandoah*qscaleall_to2055,1),
+         Monoc = round(Monoc*qscaleall_to2055,2),
+         Patux = round(Patux*qscaleall_to2055,1),
+         Catoc = round(Catoc*qscaleall_to2055,1),
+         Deerc = round(Deerc*qscaleall_to2055,0),
+         Yough = round(Yough*qscaleall_to2055,0),
+         Savag = round(Savag*qscaleall_to2055,0), # must be lfalls_no_res!
+         Wills = round(Wills*qscaleall_to2055,2),
+         Antie = round(Antie*qscaleall_to2055,2))
+
+trib_flows_ccall <- trib_flows_ccall0 %>%
+    select(-year, -quantiles, -quantiles_orig, 
+           -q_mm, -q_obs_frac, -qscaleall_to1995,
+           -qscaleall_to2025, -qscaleall_to2055, -qscaleall_to2085)
+
+write_path <- "output/"
+write_csv(trib_flows_ccall, paste(write_path, 
+                                    "ASeck_trib_flows_",
+                                    output_version, "_",
+                                    output_date,
+                                    ".csv", sep = ""),
+          append = FALSE,
+          col_names = FALSE)
+
+
+```
+
+## Plot some cdf's for q
+
+```{r}
+# lfalls_annual_1896to2009.df0 has actual flows - with the effect of climate
+lfalls_1896to1979_cdf <- lfalls_annual_1896to2009.df0 %>%
+  mutate(dataset = "obs_1896to1979") %>%
+  filter(year < 1980) %>%
+  select(year, dataset, q_mm)
+
+lfalls_1950to1979_cdf <- lfalls_annual_1896to2009.df0 %>%
+  mutate(dataset = "obs_1950to1979") %>%
+  filter(year >= 1950 & year < 1980) %>%
+  select(year, dataset, q_mm)
+
+lfalls_1980to2009_cdf <- lfalls_annual_1896to2009.df0 %>%
+  mutate(dataset = "obs_1980to2009") %>%
+  filter(year >= 1980 & year < 2010) %>%
+  select(year, dataset, q_mm)
+
+qall_base_cdf <- q_met.fannual.df %>%
+  filter(era == 1965) %>%
+  mutate(q_mm = qfrac*qbar, dataset = "q_base_allruns") %>%
+  select(year, dataset, q_mm)
+
+qall_recent_cdf <- q_met.fannual.df %>%
+  filter(era == 1995) %>%
+  mutate(q_mm = qfrac*qbar, dataset = "q_recent_allruns") %>%
+  select(year, dataset, q_mm)
+
+# qall_2055_cdf <- q_met.fannual.df %>%
+#   filter(era == 2055) %>%
+#   mutate(q_mm = qfrac*qbar, dataset = "q_2055_allruns") %>%
+#   select(year, dataset, q_mm)
+
+myplot_base_cdf0 <- rbind(lfalls_1896to1979_cdf, lfalls_1950to1979_cdf)
+myplot_base_cdf <- rbind(myplot_base_cdf0, qall_base_cdf)
+myplot_recent_cdf <- rbind(lfalls_1980to2009_cdf, qall_recent_cdf)
+
+ggplot(myplot_base_cdf, aes(q_mm, colour = dataset)) + stat_ecdf()
+
+ggplot(myplot_recent_cdf, aes(q_mm, colour = dataset)) + stat_ecdf()
+
+# How about applying the Kolmogorov-Smirnov test?
+#   - to the 2 sim and obs cdf's for 1980-2009
+
+q_obs1 <- as.vector(lfalls_1896to1979_cdf$q_mm)
+q_obs2 <- as.vector(lfalls_1950to1979_cdf$q_mm)
+kstest_historical_q <- ks.test(q_obs1, q_obs2, alternative = "two.sided") 
+
+q_obs <- as.vector(lfalls_1896to1979_cdf$q_mm)
+q_sim <- as.vector(qall_base_cdf$q_mm)
+kstest_base_q <- ks.test(q_sim, q_obs, alternative = "two.sided") 
+
+q_obs <- as.vector(lfalls_1980to2009_cdf$q_mm)
+q_sim <- as.vector(qall_recent_cdf$q_mm)
+kstest_recent_q <- ks.test(q_sim, q_obs, alternative = "two.sided") 
+
+
+```
+# ```{r}
+# 
+# ```
+# 
+# ## Tables of the quantile values by era
+# ```{r include=FALSE}
+# knitr::kable(q_cc90)
+# knitr::kable(q_cc70)
+# knitr::kable(q_cc50)
+# knitr::kable(q_cc30)
+# knitr::kable(q_cc10)
+# ```
+# 
+# ### Plot the filtered runs, grouped by the long-term mean flow in era=2055:
+# ```{r include=FALSE}
+# qfrac_ltmean_q100 <- qfrac_ltmean_q10_q90 %>%
+#     dplyr::filter(stat == "qltmean_100")
+# qfrac_ltmean_q250 <- qfrac_ltmean_q10_q90 %>%
+#     dplyr::filter(stat == "qltmean_250")
+# qfrac_ltmean_q500 <- qfrac_ltmean_q10_q90 %>%
+#     dplyr::filter(stat == "qltmean_500")
+# qfrac_ltmean_q750 <- qfrac_ltmean_q10_q90 %>%
+#     dplyr::filter(stat == "qltmean_750")
+# qfrac_ltmean_q900 <- qfrac_ltmean_q10_q90 %>%
+#     dplyr::filter(stat == "qltmean_900")
+# ggplot(data = q_cc90.runs.df, aes(x = year, y = qfracr))  +
+#   geom_line(aes(colour = run)) +
+#   geom_line(data = qfrac_ltmean_q100, aes(x = era, y = val)) +
+#   # ggtitle("dqr renormalized 15% of runs centered around 10th percentile mean") +
+#   labs(x = "Year", y = "Fractional change in flow from mean baseline") +
+#   scale_y_continuous(limits = c(0, 3))
+# ggplot(data = q_cc70.runs.df, aes(x = year, y = qfracr))  +
+#   geom_line(aes(colour = run)) +
+#   geom_line(data = qfrac_ltmean_q250, aes(x = era, y = val)) +
+#   ggtitle("dqr renormalized 15% of runs centered around 25th percentile mean") +
+#   labs(x = "Year", y = "Fractional change in flow from mean baseline") +
+#   scale_y_continuous(limits = c(0, 3))
+# ggplot(data = q_cc50.runs.df, aes(x = year, y = qfracr))  +
+#   geom_line(aes(colour = run)) +
+#   geom_line(data = qfrac_ltmean_q500, aes(x = era, y = val)) +
+#   # ggtitle("dqr renormalized 15% of runs centered around 50th percentile mean") +
+#   labs(x = "Year", y = "Fractional change in flow from mean baseline") +
+#   scale_y_continuous(limits = c(0, 3))
+# ggplot(data = q_cc30.runs.df, aes(x = year, y = qfracr))  +
+#   geom_line(aes(colour = run)) +
+#   geom_line(data = qfrac_ltmean_q750, aes(x = era, y = val)) +
+#   ggtitle("dqr renormalized 15% of runs centered around 75th percentile mean") +
+#   labs(x = "Year", y = "Fractional change in flow from mean baseline") +
+#   scale_y_continuous(limits = c(0, 3))
+# ggplot(data = q_cc10.runs.df, aes(x = year, y = qfracr))  +
+#   geom_line(aes(colour = run)) +
+#   geom_line(data = qfrac_ltmean_q900, aes(x = era, y = val)) +
+#   # ggtitle("dqr renormalized 15% of runs centered around 90th percentile mean") +
+#   labs(x = "Year", y = "Fractional change in flow from mean baseline") +
+#   scale_y_continuous(limits = c(0, 3))
+# ```
+# 
+# ### Plot the run quantiles for each scenario 
+# 
+# ```{r include=FALSE}
+# ggplot(data = q_cc10_long, aes(x = era, y = val))  +
+#   geom_line(aes(colour = stat)) +
+#   ggtitle("cc10: quantiles of long-term mean dq's") +
+#   labs(x = "Year", y = "Percent change in flow") +
+#   scale_y_continuous(limits = c(0.0, 2.8), breaks = seq(0.0, 2.8, 0.2))
+# ggplot(data = q_cc30_long, aes(x = era, y = val))  +
+#   geom_line(aes(colour = stat)) +
+#   ggtitle("cc30: quantiles of long-term mean dq's") +
+#   labs(x = "Year", y = "Percent change in flow") +
+#   scale_y_continuous(limits = c(0.0, 2.8), breaks = seq(0.0, 2.8, 0.2))
+# ggplot(data = q_cc50_long, aes(x = era, y = val))  +
+#   geom_line(aes(colour = stat)) +
+#   ggtitle("cc50: Annual dq quantiles of runs with lt means near 50th percentile") +
+#   labs(x = "Year", y = "Percent change in flow") +
+#   scale_y_continuous(limits = c(0.0, 2.8), breaks = seq(0.0, 2.8, 0.2))
+# ggplot(data = q_cc70_long, aes(x = era, y = val))  +
+#   geom_line(aes(colour = stat)) +
+#   ggtitle("cc70: quantiles of long-term mean dq's") +
+#   labs(x = "Year", y = "Percent change in flow") +
+#   scale_y_continuous(limits = c(0.0, 2.8), breaks = seq(0.0, 2.8, 0.2))
+# ggplot(data = q_cc90_long, aes(x = era, y = val))  +
+#   geom_line(aes(colour = stat)) +
+#   ggtitle("cc90: quantiles of long-term mean dq's") +
+#   labs(x = "Year", y = "Percent change in flow") +
+#   scale_y_continuous(limits = c(0.0, 2.8), breaks = seq(0.0, 2.8, 0.2))
+# ```
+# 
+# ```{r}
+# knitr::kable(qscale_display)
+# ```
+# 
+
+```{r include=FALSE}
+# # -----------------------------------------------------------------------------
+# # -----------------------------------------------------------------------------
+# # Calculate metrics for scenario selection - SKIP FOR NOW
+# # -----------------------------------------------------------------------------
+# # -----------------------------------------------------------------------------
+# 
+# # Look at observed q_mm linear model ------------------------------------------
+# 
+# # First need mean lfalls q_mm for 1897-1979 (model calibration period)
+# #   - this should be the same as qbar in climate sensitivity model
+# qbar_base <- lfalls_annual.df0 %>%
+#   filter(year > 1896 & year < 1980)
+# qbar_base <- mean(qbar_base$qave_annual_mm)
+# 
+# # Compute slope of observed q_mm - linear model - for 2 possible time periods
+# lfalls_annual_1950to2017.df <-  lfalls_annual.df0 %>%
+#   filter(year >= 1950 & year < 2018) %>%
+#   select(-qave_annual_cfs)
+# lfalls_obs_lm1 <- summary( lm(formula = q_mm ~ year, 
+#                              data = lfalls_annual_1950to2017.df) )
+# qobs_slope <- lfalls_obs_lm1$coefficients[2, 1]
+# qobs_se <- lfalls_obs_lm1$coefficients[2, 2]
+# qobs_tval <- lfalls_obs_lm1$coefficients[2, 3]
+# qobs_pval <- lfalls_obs_lm1$coefficients[2, 4]
+# 
+# lfalls_annual_1980to2017.df <-  lfalls_annual.df0 %>%
+#   filter(year >= 1980 & year < 2018) %>%
+#   select(-qave_annual_cfs)
+# 
+# lfalls_obs_lm2 <- summary( lm(formula = q_mm ~ year, 
+#                              data = lfalls_annual_1980to2017.df) )
+# 
+# # Also look at the Theil-Sen nonparametric slope ------------------------------
+# #    - need table to be in "time series" format for Sens slope
+# lfalls.ts <- ts(lfalls_annual_1950to2017.df, start =1950, frequency = 1)
+# lfalls_trends_sens <- sens.slope(lfalls.ts[, 2], 0.80)
+# 
+# # For now, here are the 1950-2017 lm results
+# qobs_slope <- 0.6037
+# qobs_se <- 0.7851
+# 
+# # Look at q_mm linear models for each scenario ensemble of runs ---------------
+# q_cc90_trends.df <- q_cc90.runs.df %>%
+#   filter(year < 2018) %>%
+#   mutate(q_mm = qbar*qfracr) %>%
+#   select(year, run, q_mm)
+# cc90_lm <- summary( lm(formula = q_mm ~ year, data = q_cc90_trends.df) )
+# cc90_results <- cc90_lm$coefficients # slope = -0.23, pval = 0.022
+# 
+# q_cc75_trends.df <- q_cc75.runs.df %>%
+#   filter(year < 2018) %>%
+#   mutate(q_mm = qbar*qfracr) %>%
+#   select(year, run, q_mm)
+# cc75_lm <- summary( lm(formula = q_mm ~ year, data = q_cc75_trends.df) )
+# cc75_results <- cc75_lm$coefficients # slope = 0.18, pval = 0.09
+# 
+# q_cc50_trends.df <- q_cc50.runs.df %>%
+#   filter(year < 2018) %>%
+#   mutate(q_mm = qbar*qfracr) %>%
+#   select(year, run, q_mm)
+# cc50_lm <- summary( lm(formula = q_mm ~ year, data = q_cc50_trends.df) )
+# cc50_results <- cc50_lm$coefficients # slope = -0.10, pval = 0.36
+# 
+# q_cc25_trends.df <- q_cc25.runs.df %>%
+#   filter(year < 2018) %>%
+#   mutate(q_mm = qbar*qfracr) %>%
+#   select(year, run, q_mm)
+# cc25_lm <- summary( lm(formula = q_mm ~ year, data = q_cc25_trends.df) )
+# cc25_results <- cc25_lm$coefficients # slope = 0.34, pval = 0.001
+# 
+# q_cc10_trends.df <- q_cc10.runs.df %>%
+#   filter(year < 2018) %>%
+#   mutate(q_mm = qbar*qfracr) %>%
+#   select(year, run, q_mm)
+# cc10_lm <- summary( lm(formula = q_mm ~ year, data = q_cc10_trends.df) )
+# cc10_results <- cc10_lm$coefficients # slope = 0.47, pval = 0.000
+# 
+# # Also try the ANCOVA method for comparing 2 lines ----------------------------
+# # (http://r-eco-evo.blogspot.com/2011/08/comparing-two-regression-slopes-by.html)
+# 
+# # First need to combine obs and scenario
+# #   - need the type column to be a "factor"
+# q_obs_ancova.df <- lfalls_annual_1950to2017.df %>%
+#   mutate(type = "obs")
+# 
+# q_cc10_ancova.df0 <- q_cc10_trends.df %>%
+#   mutate(type = "sim") %>%
+#   select(-run)
+# q_cc10_ancova.df <- bind_rows(q_cc10_ancova.df0, q_obs_ancova.df)
+# q_cc10_ancova.df$type <- as.factor(q_cc10_ancova.df$type)
+# cc10_mod1 <- aov(formula = q_mm ~ year*type, 
+#                      data = q_cc10_ancova.df)
+# cc10_mod2 <- aov(formula = q_mm ~ year + type, 
+#                      data = q_cc10_ancova.df)
+# summary(cc10_mod1)
+# summary(cc10_mod2)
+# anova(cc10_mod1, cc10_mod2)
+# 
+# q_cc25_ancova.df0 <- q_cc25_trends.df %>%
+#   mutate(type = "sim") %>%
+#   select(-run)
+# q_cc25_ancova.df <- bind_rows(q_cc25_ancova.df0, q_obs_ancova.df)
+# q_cc25_ancova.df$type <- as.factor(q_cc25_ancova.df$type)
+# cc25_mod1 <- aov(formula = q_mm ~ year*type, 
+#                      data = q_cc25_ancova.df)
+# cc25_mod2 <- aov(formula = q_mm ~ year + type, 
+#                      data = q_cc25_ancova.df)
+# summary(cc25_mod1)
+# summary(cc25_mod2)
+# anova(cc25_mod1, cc25_mod2)
+# 
+# q_cc50_ancova.df0 <- q_cc50_trends.df %>%
+#   mutate(type = "sim") %>%
+#   select(-run)
+# q_cc50_ancova.df <- bind_rows(q_cc50_ancova.df0, q_obs_ancova.df)
+# q_cc50_ancova.df$type <- as.factor(q_cc50_ancova.df$type)
+# cc50_mod1 <- aov(formula = q_mm ~ year*type, 
+#                      data = q_cc50_ancova.df)
+# cc50_mod2 <- aov(formula = q_mm ~ year + type, 
+#                      data = q_cc50_ancova.df)
+# summary(cc50_mod1)
+# summary(cc50_mod2)
+# anova(cc50_mod1, cc50_mod2)
+# 
+# q_cc75_ancova.df0 <- q_cc75_trends.df %>%
+#   mutate(type = "sim") %>%
+#   select(-run)
+# q_cc75_ancova.df <- bind_rows(q_cc75_ancova.df0, q_obs_ancova.df)
+# q_cc75_ancova.df$type <- as.factor(q_cc75_ancova.df$type)
+# cc75_mod1 <- aov(formula = q_mm ~ year*type, 
+#                      data = q_cc75_ancova.df)
+# cc75_mod2 <- aov(formula = q_mm ~ year + type, 
+#                      data = q_cc75_ancova.df)
+# summary(cc75_mod1)
+# summary(cc75_mod2)
+# anova(cc75_mod1, cc75_mod2)
+# 
+# q_cc90_ancova.df0 <- q_cc90_trends.df %>%
+#   mutate(type = "sim") %>%
+#   select(-run)
+# q_cc90_ancova.df <- bind_rows(q_cc90_ancova.df0, q_obs_ancova.df)
+# q_cc90_ancova.df$type <- as.factor(q_cc90_ancova.df$type)
+# cc90_mod1 <- aov(formula = q_mm ~ year*type, 
+#                      data = q_cc90_ancova.df)
+# cc90_mod2 <- aov(formula = q_mm ~ year + type, 
+#                      data = q_cc90_ancova.df)
+# summary(cc90_mod1)
+# summary(cc90_mod2)
+# anova(cc90_mod1, cc90_mod2)
+# 
+# #Let me try this on my own using lm -------------------------------------------
+# q_obs_lm.df <- lfalls_annual_1950to2017.df %>%
+#   mutate(type = 1)
+# q_cc10_lm.df0 <- q_cc10_trends.df %>%
+#   mutate(type = 0) %>%
+#   select(-run)
+# q_cc10_lm.df <- bind_rows(q_cc10_lm.df0, q_obs_lm.df)
+# cc10_lm <- summary ( lm(formula = q_mm ~ type + year*type, 
+#                      data = q_cc10_lm.df))
+# cc10_lm$coefficients
+# 
+# q_cc25_lm.df0 <- q_cc25_trends.df %>%
+#   mutate(type = 0) %>%
+#   select(-run)
+# q_cc25_lm.df <- bind_rows(q_cc25_lm.df0, q_obs_lm.df)
+# cc25_lm <- summary ( lm(formula = q_mm ~ type + year*type, 
+#                      data = q_cc25_lm.df))
+# cc25_lm$coefficients
+# 
+# q_cc50_lm.df0 <- q_cc50_trends.df %>%
+#   mutate(type = 0) %>%
+#   select(-run)
+# q_cc50_lm.df <- bind_rows(q_cc50_lm.df0, q_obs_lm.df)
+# cc50_lm <- summary ( lm(formula = q_mm ~ type + year*type, 
+#                      data = q_cc50_lm.df))
+# cc50_lm$coefficients
+# 
+# q_cc75_lm.df0 <- q_cc75_trends.df %>%
+#   mutate(type = 0) %>%
+#   select(-run)
+# q_cc75_lm.df <- bind_rows(q_cc75_lm.df0, q_obs_lm.df)
+# cc75_lm <- summary ( lm(formula = q_mm ~ type + year*type, 
+#                      data = q_cc75_lm.df))
+# cc75_lm$coefficients
+# 
+# q_cc90_lm.df0 <- q_cc90_trends.df %>%
+#   mutate(type = 0) %>%
+#   select(-run)
+# q_cc90_lm.df <- bind_rows(q_cc90_lm.df0, q_obs_lm.df)
+# cc90_lm <- summary ( lm(formula = q_mm ~ type + year*type, 
+#                      data = q_cc90_lm.df))
+# cc90_lm$coefficients
+# 
+# # Compute q scale factors, from 1965 to 2055, for cc50 ------------------------
+# # I moved this to make_prrism_inputs
+# 
+# # quantiles <- c(0.001, 0.01, 0.02, 0.05, 0.10, 0.25, 0.35, 0.50,
+# #                0.65, 0.75, 0.90, 0.95, 0.98, 0.99, 1.00) # dqlt999 -> 1.00
+# # 
+# # qm_cc50 <- q_cc50 %>% 
+# #   filter(era %in% c(1965, 2055)) %>%
+# #   mutate(eratxt = c("t1965", "t2055")) %>%  
+# #   select(-dqrcount, -dqrmean, -dqrsd, -pltave, -tltave, -era) %>%
+# #   gather(newrows, values, -eratxt) %>%
+# #   spread(eratxt, values)
+# # 
+# # # Add column with numeric quantile values to replace text quantile values
+# # #   - e.g. dqrlt01 -> 0.01; compute the quantile mapping values
+# # qm_cc50 <- qm_cc50 %>%
+# #   cbind(quantiles) %>%
+# #   select(newrows, quantiles, t1965, t2055) %>%
+# #   mutate(qscale_cc50 = round(t2055/t1965, 2))
+
+```
+
+### Flow change factors for "no change" scenario (cc50)
+
+```{r}
+# knitr::kable(qm_cc50)
+```
+
+```{r}
+# Remove objects that are no longer useful to clean up the global environment.
+#rm(with.df, withdrawals.df, pot.total)
+```
+
